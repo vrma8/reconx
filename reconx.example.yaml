@@ -1,0 +1,67 @@
+# Copy to a private (chmod 600) file and pass with --config.
+api_keys:
+  shodan: ""
+  # Use either the bearer-style Censys key or an API ID/secret pair.
+  censys: ""
+  censys_id: ""
+  censys_secret: ""
+  virustotal: ""
+  urlscan: ""
+  serpapi: ""
+  github: ""
+  gitlab: ""
+  hibp: ""
+  securitytrails: ""
+  viewdns: ""
+  ipinfo: ""
+wordlists:
+  # Optional additional wordlist. Reconx automatically loads the Kali SecLists
+  # top-5000 path when installed, then merges this source without replacement.
+  subdomains: "/usr/share/wordlists/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
+  directories: "/usr/share/wordlists/seclists/Discovery/Web-Content/common.txt"
+scanning:
+  rate: 200
+  timeout_ms: 2000
+  workers: 50
+  retries: 2
+  max_probes: 300000
+  masscan: false
+  icmp: false
+  service_enum: false
+attack_surface:
+  # Phase 2 checks run after the authorization gate. Use the matching --no-*
+  # options or set false here to suppress public HTTP validation probes.
+  cloud_assets: true
+  max_cloud_candidates: 500
+  takeover_verify: true
+  # Zero inspects every discovered CNAME; the global max_probes limit remains.
+  max_takeover_checks: 0
+  subdomain_permutations: true
+  # Applied independently to SecLists and the optional custom wordlist.
+  max_subdomain_words: 5000
+  max_permutations: 10000
+osint:
+  # Both are bounded and only run after --i-am-authorized. Disable explicitly
+  # for a lower-impact passive-only Phase 1 run.
+  axfr: true
+  social_enum: true
+web:
+  crawl_depth: 2
+  max_urls: 500
+  respect_robots: true
+  content_discovery: false
+  api_discovery: true
+  js_analysis: false
+  screenshots: false
+  waf_detection: false
+  user_agent: "reconx/1.0 (+authorized-security-assessment)"
+vulnerability:
+  nvd: false
+  cve_db: ""
+secrets:
+  nlp: true
+external_tools:
+  # Optional, used only with osint.social_enum: true.
+  sherlock: ""
+reporting:
+  show_secrets: false

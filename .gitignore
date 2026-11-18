@@ -1,0 +1,6 @@
+bin/
+reconx_workspaces/
+*.pdf
+*.coverage
+__pycache__/
+*.py[cod]
