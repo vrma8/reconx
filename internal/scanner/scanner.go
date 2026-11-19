@@ -282,8 +282,14 @@ func PortName(port int) string {
 		return "postgresql"
 	case 5900:
 		return "vnc"
+	case 2375, 2376:
+		return "docker"
+	case 5601:
+		return "kibana"
 	case 6379:
 		return "redis"
+	case 9200:
+		return "elasticsearch"
 	case 27017:
 		return "mongodb"
 	default:

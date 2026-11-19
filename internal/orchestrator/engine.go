@@ -41,14 +41,15 @@ import (
 var phaseNames = map[int]string{0: "Target intake", 1: "Passive OSINT", 2: "Subdomain enumeration", 3: "Host discovery", 4: "Port scanning", 5: "Service enumeration", 6: "Web reconnaissance", 7: "Vulnerability checks", 8: "Secrets extraction", 9: "Risk scoring", 10: "Report generation"}
 
 type Engine struct {
-	Config      config.Config
-	Workspace   *Workspace
-	State       *model.State
-	parsed      utils.ParsedTarget
-	logger      *slog.Logger
-	risk        model.RiskSummary
-	stats       model.RunStats
-	screenshots []model.ScreenshotRef
+	Config         config.Config
+	Workspace      *Workspace
+	State          *model.State
+	parsed         utils.ParsedTarget
+	logger         *slog.Logger
+	risk           model.RiskSummary
+	stats          model.RunStats
+	screenshots    []model.ScreenshotRef
+	sensitivePaths []exposedPath
 }
 
 func New(target string, settings config.Config, logger *slog.Logger) (*Engine, error) {
@@ -471,20 +472,30 @@ func (e *Engine) phase4(ctx context.Context) error {
 	if err := e.checkProbeBudget(len(addresses), len(ports)); err != nil {
 		return err
 	}
-	if e.Config.Syn {
-		e.State.AddWarning("SYN mode requires a privileged AF_PACKET implementation and currently falls back to TCP connect scanning")
-	}
 	var results []scanner.Result
 	var err error
+	synUsed := false
+	if e.Config.Syn && len(results) == 0 {
+		synResults, synErr := scanner.ScanSYN(ctx, addresses, ports, e.scanOptions())
+		switch {
+		case errors.Is(synErr, scanner.ErrRawUnavailable):
+			e.State.AddWarning("SYN mode needs CAP_NET_RAW; falling back to TCP connect scanning")
+		case synErr != nil:
+			e.State.AddWarning("SYN scan: " + synErr.Error() + "; falling back to TCP connect scanning")
+		default:
+			results = synResults
+			synUsed = true
+		}
+	}
 	if e.Config.Masscan && e.parsed.Profile.Kind == model.TargetCIDR {
 		results, err = e.masscanPreScan(ctx)
 		if err != nil {
 			e.State.AddWarning("masscan pre-scan: " + err.Error())
 		}
 	}
-	if len(results) > 0 {
+	if len(results) > 0 && !synUsed {
 		results, err = scanner.ScanTCPPairs(ctx, results, e.scanOptions())
-	} else {
+	} else if !synUsed {
 		results, err = scanner.ScanTCP(ctx, addresses, ports, e.scanOptions())
 	}
 	if err != nil && !errors.Is(err, context.Canceled) {
@@ -505,6 +516,9 @@ func (e *Engine) phase4(ctx context.Context) error {
 		}
 		for _, result := range udp {
 			e.State.AddOpenPort(result.Host, result.Port, true)
+			if result.Port == 161 {
+				e.State.AddService(model.Service{Host: result.Host, Port: result.Port, Transport: "udp", Name: "snmp"})
+			}
 		}
 	}
 	e.enumerateServices(ctx)
@@ -538,8 +552,19 @@ type serviceDetail struct {
 }
 
 func (e *Engine) phase5(ctx context.Context) error {
+	profile, _, _, _, _, _, _ := e.State.Snapshot()
 	details := make([]serviceDetail, 0)
 	operatingSystems := map[string]string{}
+	dnssec := dns.DNSSECResult{Name: profile.Hostname}
+	if profile.Kind == model.TargetURL {
+		if parsed, err := url.Parse(profile.URL); err == nil {
+			dnssec.Name = parsed.Hostname()
+		}
+	}
+	if dnssec.Name != "" {
+		dnssec = dns.CheckDNSSEC(ctx, dnssec.Name, e.Config.Timeout)
+		e.stats.DNSQueries++
+	}
 	if e.Config.NmapServiceScan || e.Config.NmapOSScan || e.Config.NmapVulnScan {
 		tool, err := e.lookupTool("nmap")
 		if err != nil {
@@ -596,6 +621,9 @@ func (e *Engine) phase5(ctx context.Context) error {
 		details = append(details, e.enumerateExternalServices(ctx)...)
 	}
 	if err := e.Workspace.WriteJSON("04_ports/os_fingerprints.json", operatingSystems); err != nil {
+		return err
+	}
+	if err := e.Workspace.WriteJSON("05_services/dnssec.json", dnssec); err != nil {
 		return err
 	}
 	if err := e.Workspace.WriteJSON("05_services/service_details.json", details); err != nil {
@@ -1000,7 +1028,18 @@ func (e *Engine) phase7(ctx context.Context) error {
 		}
 	}
 	if e.Config.WPScan && len(urls) > 0 {
-		for _, value := range urls {
+		wordpress := make([]string, 0)
+		for _, value := range web {
+			if value.StatusCode == 0 || !isWordPressTarget(value) {
+				continue
+			}
+			wordpress = append(wordpress, value.FinalURL)
+		}
+		sort.Strings(wordpress)
+		if len(wordpress) == 0 {
+			e.State.AddWarning("WPScan requested but no WordPress target was identified; skipping")
+		}
+		for _, value := range wordpress {
 			path := "07_vulns/wpscan_" + safeName(value) + ".json"
 			if err := e.runTool(ctx, "wpscan", []string{"--url", value, "--no-update", "--format", "json"}, path, ""); err != nil {
 				e.State.AddWarning(err.Error())
@@ -1054,6 +1093,15 @@ func (e *Engine) phase8(ctx context.Context) error {
 	_, _, _, web, _, _, _ := e.State.Snapshot()
 	found := make([]model.Finding, 0)
 	exposed := make([]map[string]any, 0)
+	seenExposed := map[string]struct{}{}
+	addExposed := func(entry map[string]any) {
+		key := fmt.Sprint(entry["url"], "|", entry["path"])
+		if _, found := seenExposed[key]; found {
+			return
+		}
+		seenExposed[key] = struct{}{}
+		exposed = append(exposed, entry)
+	}
 	for _, result := range web {
 		content := result.Body
 		for key, value := range result.Headers {
@@ -1061,8 +1109,14 @@ func (e *Engine) phase8(ctx context.Context) error {
 		}
 		found = append(found, secrets.Findings(result.FinalURL, content, e.Config.ShowSecrets)...)
 		if parsed, err := url.Parse(result.FinalURL); err == nil && result.StatusCode < 400 && secrets.LooksSensitivePath(parsed.Path) {
-			exposed = append(exposed, map[string]any{"url": result.FinalURL, "status_code": result.StatusCode, "path": parsed.Path})
+			addExposed(map[string]any{"url": result.FinalURL, "status_code": result.StatusCode, "path": parsed.Path, "source": "web-content"})
 		}
+	}
+	for _, path := range e.sensitivePaths {
+		if !path.Interesting {
+			continue
+		}
+		addExposed(map[string]any{"url": path.URL, "status_code": path.StatusCode, "path": path.Path, "source": path.Source})
 	}
 	for _, finding := range found {
 		e.State.AddFinding(finding)
@@ -1121,6 +1175,11 @@ func (e *Engine) writeReports(value model.Report) error {
 	}
 	if err := report.HTML(e.Workspace.Path("09_report", "report.html"), value); err != nil {
 		return err
+	}
+	if e.Config.SystemdUnit {
+		if err := report.SystemdUnits(e.Workspace.Path("09_report", "systemd"), value.Target.Input, 24*time.Hour); err != nil {
+			e.State.AddWarning("systemd unit generation: " + err.Error())
+		}
 	}
 	if e.Config.JSON != "" {
 		if err := report.JSON(e.Config.JSON, value); err != nil {
@@ -1627,6 +1686,11 @@ func (e *Engine) checkProbeBudget(hosts, ports int) error {
 }
 
 func (e *Engine) icmpSweep(ctx context.Context, addresses []netip.Addr) []netip.Addr {
+	if native, err := scanner.ICMPSweep(ctx, addresses, e.scanOptions()); err == nil {
+		return native
+	} else if !errors.Is(err, scanner.ErrRawUnavailable) {
+		e.State.AddWarning("raw ICMP sweep: " + err.Error() + "; falling back to ping")
+	}
 	binary, err := exec.LookPath("ping")
 	if err != nil {
 		e.State.AddWarning("ICMP discovery requested but ping is not installed")
@@ -2237,6 +2301,11 @@ func phaseSelection(phases, skip string) (map[int]bool, error) {
 	}
 	return selected, nil
 }
+func isWordPressTarget(result model.WebResult) bool {
+	joined := strings.ToLower(strings.Join(result.Technologies, " ") + " " + result.Body)
+	return strings.Contains(joined, "wordpress") || strings.Contains(joined, "wp-content")
+}
+
 func safeName(value string) string {
 	value = strings.NewReplacer(":", "_", "/", "_", "?", "_", "&", "_").Replace(value)
 	if len(value) > 100 {

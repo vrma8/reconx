@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHeaderScoreAndMissingHeaders(t *testing.T) {
@@ -72,5 +73,34 @@ func TestWeakCipherAndTLSVersionNames(t *testing.T) {
 	}
 	if tlsVersionName(0x0304) != "TLS 1.3" {
 		t.Fatalf("TLS version name = %q", tlsVersionName(0x0304))
+	}
+}
+
+func TestProbeWAFRecordsTimingLead(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if strings.Contains(request.URL.RawQuery, "reconx_probe") {
+			time.Sleep(650 * time.Millisecond)
+		}
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	client := &http.Client{Timeout: 3 * time.Second}
+	result := ProbeWAF(context.Background(), client, "test", server.URL+"/")
+	if !result.TimingLead || result.MaxTimingDeltaMS < 500 {
+		t.Fatalf("WAF timing result = %#v", result)
+	}
+}
+
+func TestProbeSensitivePathListIsHEADOnly(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodHead {
+			t.Errorf("method = %s", request.Method)
+		}
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	results := ProbeSensitivePathList(context.Background(), server.Client(), "test", []string{server.URL + "/"}, []string{"/backup.sql", "/old.zip"})
+	if len(results) != 2 || !results[0].Interesting {
+		t.Fatalf("path results = %#v", results)
 	}
 }

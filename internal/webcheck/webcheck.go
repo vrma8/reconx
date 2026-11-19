@@ -18,6 +18,8 @@ import (
 	"time"
 )
 
+const timingLeadThreshold = 500 * time.Millisecond
+
 type HeaderAssessment struct {
 	Score   int      `json:"score"`
 	Missing []string `json:"missing,omitempty"`
@@ -224,10 +226,12 @@ func short(value string) string {
 }
 
 type WAFResult struct {
-	URL        string   `json:"url"`
-	Detected   bool     `json:"detected"`
-	Signatures []string `json:"signatures,omitempty"`
-	Statuses   []int    `json:"statuses,omitempty"`
+	URL              string   `json:"url"`
+	Detected         bool     `json:"detected"`
+	Signatures       []string `json:"signatures,omitempty"`
+	Statuses         []int    `json:"statuses,omitempty"`
+	TimingLead       bool     `json:"timing_lead,omitempty"`
+	MaxTimingDeltaMS int64    `json:"max_timing_delta_ms,omitempty"`
 }
 
 var wafPayloads = []string{
@@ -241,7 +245,8 @@ var wafPayloads = []string{
 // material status change appears; it is never treated as proof of a WAF.
 func ProbeWAF(ctx context.Context, client *http.Client, userAgent string, target string) WAFResult {
 	result := WAFResult{URL: target}
-	baselineStatus, baselineBody := fetch(ctx, client, userAgent, target)
+	baseline := fetchTimed(ctx, client, userAgent, target)
+	baselineStatus, baselineBody := baseline.Status, baseline.Body
 	for _, payload := range wafPayloads {
 		parsed, err := url.Parse(target)
 		if err != nil {
@@ -250,8 +255,17 @@ func ProbeWAF(ctx context.Context, client *http.Client, userAgent string, target
 		query := parsed.Query()
 		query.Set("reconx_probe", payload)
 		parsed.RawQuery = query.Encode()
-		status, body := fetch(ctx, client, userAgent, parsed.String())
+		probe := fetchTimed(ctx, client, userAgent, parsed.String())
+		status, body := probe.Status, probe.Body
 		result.Statuses = append(result.Statuses, status)
+		delta := probe.Duration.Milliseconds() - baseline.Duration.Milliseconds()
+		if delta > result.MaxTimingDeltaMS {
+			result.MaxTimingDeltaMS = delta
+		}
+		if delta >= timingLeadThreshold.Milliseconds() && baselineStatus > 0 && status == baselineStatus {
+			result.TimingLead = true
+			result.Signatures = appendUnique(result.Signatures, "timing delay on bounded payload")
+		}
 		lower := strings.ToLower(body)
 		for _, marker := range []string{"blocked by", "request blocked", "access denied", "waf", "mod_security", "forbidden"} {
 			if strings.Contains(lower, marker) {
@@ -272,19 +286,31 @@ func ProbeWAF(ctx context.Context, client *http.Client, userAgent string, target
 	return result
 }
 
+type timedResponse struct {
+	Status   int
+	Body     string
+	Duration time.Duration
+}
+
 func fetch(ctx context.Context, client *http.Client, userAgent, target string) (int, string) {
+	response := fetchTimed(ctx, client, userAgent, target)
+	return response.Status, response.Body
+}
+
+func fetchTimed(ctx context.Context, client *http.Client, userAgent, target string) timedResponse {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return 0, ""
+		return timedResponse{}
 	}
 	request.Header.Set("User-Agent", userAgent)
+	start := time.Now()
 	response, err := client.Do(request)
 	if err != nil {
-		return 0, ""
+		return timedResponse{Duration: time.Since(start)}
 	}
 	defer response.Body.Close()
 	content, _ := io.ReadAll(io.LimitReader(response.Body, 64*1024))
-	return response.StatusCode, string(content)
+	return timedResponse{Status: response.StatusCode, Body: string(content), Duration: time.Since(start)}
 }
 
 func appendUnique(values []string, value string) []string {
@@ -323,13 +349,16 @@ func ProbeParameters(ctx context.Context, client *http.Client, userAgent, target
 		query := parsed.Query()
 		query.Set(parameter, marker)
 		parsed.RawQuery = query.Encode()
-		_, body := fetch(ctx, client, userAgent, parsed.String())
-		entry := ParameterResult{URL: target, Parameter: parameter, Reflected: strings.Contains(body, marker)}
+		baseline := fetchTimed(ctx, client, userAgent, parsed.String())
+		entry := ParameterResult{URL: target, Parameter: parameter, Reflected: strings.Contains(baseline.Body, marker)}
 		query.Set(parameter, "'")
 		parsed.RawQuery = query.Encode()
-		_, errorBody := fetch(ctx, client, userAgent, parsed.String())
+		errorProbe := fetchTimed(ctx, client, userAgent, parsed.String())
+		if delta := errorProbe.Duration.Milliseconds() - baseline.Duration.Milliseconds(); delta >= timingLeadThreshold.Milliseconds() {
+			entry.TimeDeltaMS = delta
+		}
 		for _, pattern := range errorPatterns {
-			if strings.Contains(strings.ToLower(errorBody), pattern) {
+			if strings.Contains(strings.ToLower(errorProbe.Body), pattern) {
 				entry.ErrorPattern = pattern
 				break
 			}
@@ -355,6 +384,12 @@ var sensitivePaths = []string{
 	"/server-status", "/phpinfo.php", "/swagger.json", "/openapi.json", "/ACTUATOR/env",
 }
 
+// FixedSensitivePaths returns the built-in high-signal path list so callers
+// can combine it with an operator-supplied wordlist under one hard cap.
+func FixedSensitivePaths() []string {
+	return append([]string(nil), sensitivePaths...)
+}
+
 // ProbeSensitivePaths checks a small, fixed set of high-signal paths. It only
 // performs HEAD requests and never downloads file contents.
 func ProbeSensitivePaths(ctx context.Context, client *http.Client, userAgent string, seeds []string) []SensitivePathResult {
@@ -370,6 +405,55 @@ func ProbeSensitivePaths(ctx context.Context, client *http.Client, userAgent str
 			continue
 		}
 		for _, path := range sensitivePaths {
+			candidate := base
+			candidate.Path = path
+			request, err := http.NewRequestWithContext(ctx, http.MethodHead, candidate.String(), nil)
+			if err != nil {
+				continue
+			}
+			request.Header.Set("User-Agent", userAgent)
+			response, err := client.Do(request)
+			if err != nil {
+				continue
+			}
+			status := response.StatusCode
+			_ = response.Body.Close()
+			if status == 200 || status == 301 || status == 302 || status == 403 {
+				output = append(output, SensitivePathResult{URL: candidate.String(), Path: path, StatusCode: status, Interesting: status == 200})
+			}
+		}
+	}
+	sort.Slice(output, func(i, j int) bool {
+		if output[i].URL == output[j].URL {
+			return output[i].Path < output[j].Path
+		}
+		return output[i].URL < output[j].URL
+	})
+	return output
+}
+
+// ProbeSensitivePathList checks a caller-supplied, already-capped path list.
+// Only HEAD requests are issued and no response bodies are read.
+func ProbeSensitivePathList(ctx context.Context, client *http.Client, userAgent string, seeds []string, paths []string) []SensitivePathResult {
+	if len(paths) == 0 {
+		return nil
+	}
+	capped := append([]string(nil), paths...)
+	if len(capped) > 500 {
+		capped = capped[:500]
+	}
+	output := make([]SensitivePathResult, 0, len(capped))
+	for _, seed := range seeds {
+		parsed, err := url.Parse(seed)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			continue
+		}
+		base := *parsed
+		base.Path, base.RawQuery, base.Fragment = "", "", ""
+		for _, path := range capped {
+			if !strings.HasPrefix(path, "/") {
+				path = "/" + path
+			}
 			candidate := base
 			candidate.Path = path
 			request, err := http.NewRequestWithContext(ctx, http.MethodHead, candidate.String(), nil)

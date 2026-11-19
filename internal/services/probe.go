@@ -7,8 +7,10 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"regexp"
 	"strconv"
@@ -53,27 +55,59 @@ func Enrich(ctx context.Context, service model.Service, timeout time.Duration) m
 			if service.Banner == "" {
 				service.Banner = name + " " + version
 			}
+			kex, hostKeys, ciphers := sshAlgorithms(tracked)
+			if hostKeys != "" {
+				service.Metadata["ssh_host_key_algorithms"] = hostKeys
+			}
+			if kex != "" {
+				service.Metadata["ssh_kex_algorithms"] = kex
+			}
+			if ciphers != "" {
+				service.Metadata["ssh_ciphers"] = ciphers
+			}
 		}
 	case "smtp":
 		service.Metadata["ehlo"] = smtpEHLO(tracked)
 	case "ftp":
 		service.Metadata["features"] = ftpFeatures(tracked)
 	case "redis":
-		service.Metadata["info"] = redisInfo(tracked)
+		info := redisInfo(tracked)
+		service.Metadata["info"] = info
+		if strings.Contains(info, "redis_version:") {
+			service.Metadata["unauthenticated_access"] = "info_response"
+		} else if strings.Contains(strings.ToLower(info), "noauth") {
+			service.Metadata["unauthenticated_access"] = "requires_auth"
+		}
 	case "memcached":
-		service.Metadata["stats"] = memcachedStats(tracked)
+		stats := memcachedStats(tracked)
+		service.Metadata["stats"] = stats
+		if strings.Contains(stats, "version ") {
+			service.Metadata["unauthenticated_access"] = "stats_response"
+		}
 	case "mysql":
 		service.Metadata["server_version"] = mysqlHandshake(tracked)
 	case "postgresql":
-		service.Metadata["ssl"] = postgresSSL(tracked, service.Host)
+		ssl := postgresSSL(tracked, service.Host)
+		service.Metadata["ssl"] = ssl
+		if strings.Contains(ssl, "ssl_not_supported") {
+			if access := postgresAuth(tracked); access != "" {
+				service.Metadata["unauthenticated_access"] = access
+			}
+		}
 	case "mongodb":
 		service.Metadata["server_version"] = versionPattern.FindString(readLine(tracked, 512))
 	case "vnc":
 		service.Metadata["rfb_version"] = rfbPattern.FindString(readLine(tracked, 128))
 	case "rdp":
+		service.Metadata["encryption"] = rdpEncryption(tracked)
 		service.Metadata["tls"] = rdpTLS(ctx, service.Host, service.Port, timeout)
 	case "http", "https":
 		service.Metadata["http"] = httpHead(tracked, service.Host)
+	case "elasticsearch", "docker":
+		service.Metadata["api"] = httpAPIInfo(tracked, service.Host)
+		if strings.HasPrefix(service.Metadata["api"], "HTTP/1.") && !strings.Contains(service.Metadata["api"], " 401") && !strings.Contains(service.Metadata["api"], " 403") {
+			service.Metadata["unauthenticated_access"] = "http_api"
+		}
 	default:
 		service.Metadata["protocol_guess"] = guessProtocol(service.Name, service.Port)
 	}
@@ -261,6 +295,32 @@ func postgresSSL(connection net.Conn, host string) string {
 	return "supported; " + tlsVersionName(state.Version)
 }
 
+// postgresAuth sends a read-only startup packet without credentials and
+// interprets the server's first authentication code. It never sends passwords.
+func postgresAuth(connection net.Conn) string {
+	user := "user\x00reconx\x00database\x00reconx\x00\x00"
+	packet := make([]byte, 8+len(user))
+	binary.BigEndian.PutUint32(packet[0:4], uint32(len(packet)))
+	binary.BigEndian.PutUint32(packet[4:8], 196608)
+	copy(packet[8:], user)
+	if _, err := connection.Write(packet); err != nil {
+		return ""
+	}
+	header := make([]byte, 9)
+	if _, err := io.ReadFull(connection, header); err != nil || header[0] != 'R' {
+		return ""
+	}
+	code := binary.BigEndian.Uint32(header[5:9])
+	switch code {
+	case 0:
+		return "authentication_ok"
+	case 3, 5, 10, 11:
+		return "requires_auth"
+	default:
+		return fmt.Sprintf("auth_code_%d", code)
+	}
+}
+
 func rdpTLS(ctx context.Context, host string, port int, timeout time.Duration) string {
 	dialer := net.Dialer{Timeout: timeout}
 	connection, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
@@ -288,6 +348,94 @@ func httpHead(connection net.Conn, host string) string {
 		return ""
 	}
 	return strings.TrimSpace(line)
+}
+
+// sshAlgorithms parses the unencrypted KEXINIT packet that an SSH server
+// sends immediately after its version banner. It performs no key exchange.
+func sshAlgorithms(connection net.Conn) (string, string, string) {
+	header := make([]byte, 4)
+	if _, err := io.ReadFull(connection, header); err != nil {
+		return "", "", ""
+	}
+	length := int(binary.BigEndian.Uint32(header))
+	if length < 20 || length > 16384 {
+		return "", "", ""
+	}
+	payload := make([]byte, length)
+	if _, err := io.ReadFull(connection, payload); err != nil || payload[1] != 20 {
+		return "", "", ""
+	}
+	offset := 2 + 16 // SSH_MSG_KEXINIT + cookie
+	nameList := func() string {
+		if offset+4 > len(payload) {
+			return ""
+		}
+		size := int(binary.BigEndian.Uint32(payload[offset : offset+4]))
+		offset += 4
+		if size < 0 || size > len(payload)-offset {
+			return ""
+		}
+		value := string(payload[offset : offset+size])
+		offset += size
+		return boundedMetadata(value, 512)
+	}
+	kex := nameList()
+	hostKeys := nameList()
+	ciphers := nameList()
+	return kex, hostKeys, ciphers
+}
+
+// rdpEncryption asks only for the public RDP negotiation response. It does not
+// authenticate, negotiate a session or send credentials.
+func rdpEncryption(connection net.Conn) string {
+	request := []byte{0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x01, 0x00, 0x08, 0x00, 0x0f, 0x00, 0x00, 0x00}
+	if _, err := connection.Write(request); err != nil {
+		return ""
+	}
+	response := make([]byte, 32)
+	count, err := connection.Read(response)
+	if err != nil || count < 15 || response[7] != 0x02 {
+		return ""
+	}
+	selected := binary.LittleEndian.Uint32(response[11:15])
+	names := make([]string, 0, 4)
+	for _, entry := range []struct {
+		bit  uint32
+		name string
+	}{{0x01, "SSL"}, {0x02, "HYBRID"}, {0x04, "RDSTLS"}, {0x08, "HYBRID_EX"}} {
+		if selected&entry.bit != 0 {
+			names = append(names, entry.name)
+		}
+	}
+	if len(names) == 0 {
+		return "unknown"
+	}
+	return strings.Join(names, ", ")
+}
+
+func httpAPIInfo(connection net.Conn, host string) string {
+	_, _ = fmt.Fprintf(connection, "GET / HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n", host)
+	reader := bufio.NewReader(connection)
+	status, err := reader.ReadString('\n')
+	if err != nil {
+		return ""
+	}
+	status = strings.TrimSpace(status)
+	body := make([]byte, 4096)
+	count, _ := io.ReadFull(reader, body)
+	version := versionPattern.FindString(string(body[:count]))
+	if version != "" {
+		status += "; version " + version
+	}
+	return boundedMetadata(status, 256)
+}
+
+func boundedMetadata(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if len(value) > limit {
+		return value[:limit]
+	}
+	return value
 }
 
 func guessProtocol(name string, port int) string {

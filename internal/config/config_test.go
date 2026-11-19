@@ -80,3 +80,26 @@ vulnerability:
 		t.Fatalf("capability config = %#v", value)
 	}
 }
+
+func TestLoadFileCompletionCapabilities(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "completion.yaml")
+	content := `web:
+  sensitive_wordlist: /usr/share/wordlists/common.txt
+  max_sensitive_paths: 350
+reporting:
+  systemd_unit: true
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	value, err := LoadFile(path, Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.SensitiveWordlist != "/usr/share/wordlists/common.txt" || value.MaxSensitivePaths != 350 || !value.SystemdUnit {
+		t.Fatalf("completion config = %#v", value)
+	}
+	if Default().Timeout != 500*time.Millisecond {
+		t.Fatalf("default timeout = %s", Default().Timeout)
+	}
+}

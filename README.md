@@ -50,7 +50,7 @@ The required toolchain is Go 1.22+ and Python 3.10+ only for the optional passiv
 
 `--deep` enables all 65,535 TCP ports and Phase-2 permutations. Increase `max_subdomain_words` or `max_permutations` explicitly in the configuration when an authorized assessment needs a larger DNS scope; configured Phase-2 limits are never silently raised. The default probe ceiling is `300000`; scans that exceed it fail safely unless `--unsafe-large-scan` is given. Do not use that override to scan targets outside your explicit authorization.
 
-Extra capabilities are controlled by explicit flags: `--service-details` adds bounded read-only protocol metadata/hex dumps, `--nmap-service-scan`/`--nmap-os` normalize Nmap XML, `--header-score`, `--sri-checks` and `--tls-assessment` are passive assessments, while `--active-waf`, `--parameter-fuzzing`, `--sensitive-files` and `--active-checks` enable small fixed-payload probes with hard target/request caps. Every flag still requires the mandatory `--i-am-authorized` gate; use active flags only inside the approved scope.
+Extra capabilities are controlled by explicit flags: `--service-details` adds bounded read-only protocol metadata/hex dumps, `--syn` and `--icmp` use privileged raw sockets when CAP_NET_RAW is available, `--nmap-service-scan`/`--nmap-os` normalize Nmap XML, and `--header-score`, `--sri-checks` and `--tls-assessment` are passive assessments. `--active-waf`, `--parameter-fuzzing`, `--sensitive-files`, `--sensitive-wordlist` and `--active-checks` enable small fixed-payload probes with hard target/request caps; `--systemd-unit` writes reviewable scheduling files. Every flag still requires the mandatory `--i-am-authorized` gate; use active flags only inside the approved scope.
 
 ## Pipeline
 
@@ -59,16 +59,16 @@ Extra capabilities are controlled by explicit flags: `--service-details` adds bo
 | 0 | Strict target parsing, CIDR cap, resolution, reverse DNS, workspace initialization |
 | 1 | Concurrent bounded passive OSINT: full DNS record set, WHOIS, CT, Shodan/Censys/VT/urlscan, Shodan banner evidence, GitHub/GitLab code-search indicators, Pastebin/GitLab/Bitbucket public-index searches, structured public LinkedIn employee leads, HIBP for all discovered public emails, DNS history/reverse IP, ASN/BGP ownership, AXFR, and Sherlock integration. Each keyed source/tool self-skips when unavailable. |
 | 2 | Globally rate-limited async DNS at the configured default 1000 rps, automatic SecLists top-5000 plus optional custom-wordlist merge, complete name/IP inventory, numeric/environment permutations, target-derived S3/Azure/GCS/DO probes with HEAD-to-GET fallback, previous-workspace diffs, and provider-CNAME takeover signature verification. All discovered CNAMEs are checked by default, subject to the authorized run's global probe budget. |
-| 3 | CIDR liveness probe on 22/80/443/3389 and host inventory |
-| 4 | Rate-limited TCP connect scanning with retry/backoff, top-100 responsive UDP probing, banner/TLS service metadata, opt-in bounded protocol enrichment and hex dumps |
-| 5 | Optional `nmap -sV --version-light` capture, normalized Nmap XML into service/OS data, and read-only protocol metadata |
-| 6 | HTTP/1.1 + HTTP/2 probing, verified TLS assessment, header score, SRI, fingerprints, forms/API endpoints, same-scope crawl, content discovery, bounded WAF/parameter/sensitive-path probes, cookie/CORS/header checks |
-| 7 | Explicit opt-in external `nuclei`, `nikto`, `sqlmap`, and `wpscan`, normalized tool output, and bounded native checks behind `--active-checks` |
-| 8 | Local credential/connection-string pattern detection, expanded NLP entity extraction and exposed-file artifacts with default redaction; no validation or use of values |
-| 9 | Finding deduplication, stable IDs, severity/breadth risk score with exploitability/business-impact adjustments |
-| 10 | Terminal summary with counters/detail plus workspace JSON/CSV/filterable HTML with embedded screenshots/PDF (when `wkhtmltopdf` is installed) |
+| 3 | CIDR liveness probe, privileged raw-socket ICMP with `ping` fallback, passive ASN/org/country enrichment and host inventory |
+| 4 | 500 ms default timeout, rate-limited TCP connect or privileged raw-IP SYN scanning, UDP probing, SSH KEX/host-key algorithms, banner/TLS metadata and bounded protocol enrichment with hex dumps |
+| 5 | Nmap XML normalization, RDP encryption metadata, DNSSEC query, UDP/SNMP linkage and read-only unauthenticated-access indicators |
+| 6 | HTTP/1.1 + HTTP/2 probing, verified TLS assessment, header score, SRI, timing-aware WAF/parameter leads, capped wordlist sensitive-path `HEAD` checks, crawl/API/JS discovery and cookie/CORS/header checks |
+| 7 | Explicit opt-in external tools (WPScan only on confirmed WordPress), normalized tool output, bounded native checks and local NVD exact/ranged CPE matching |
+| 8 | Local credential/connection-string detection, expanded NLP entities and deduplicated exposed-file inventory with source attribution; default redaction |
+| 9 | Finding deduplication, stable IDs, exact/ranged CVE correlation and severity/breadth/exploitability/business-impact scoring |
+| 10 | Terminal summary with counters/detail, JSON/CSV/filterable HTML with embedded screenshots, optional PDF and operator-reviewable systemd units |
 
-Reconx implements all ten pipeline phases. Phase 1 and Phase 2 run only after the mandatory authorization gate; source keys and missing local tools still self-skip without aborting the rest of the run. Use `--no-cloud-assets`, `--no-takeover-verify`, or the corresponding configuration values to suppress those Phase-2 HTTP checks when they are outside an approved scope. The portable core does not claim raw AF_PACKET privileges it does not have: `--syn` reports the TCP-connect fallback if a raw implementation is unavailable. Intrusive external tools remain explicit options; their raw output is preserved separately, and Nuclei results remain marked as tool-reported until manually validated. See [`docs/PLAN_COVERAGE.md`](docs/PLAN_COVERAGE.md) for requirement traceability, [`Progress.md`](Progress.md) for current build/verification status, and [`Phases.md`](Phases.md) for the remaining deferred capabilities.
+Reconx implements all ten pipeline phases. Phase 1 and Phase 2 run only after the mandatory authorization gate; source keys and missing local tools still self-skip without aborting the rest of the run. Use `--no-cloud-assets`, `--no-takeover-verify`, or the corresponding configuration values to suppress those Phase-2 HTTP checks when they are outside an approved scope. The portable core attempts privileged raw-IP SYN/ICMP probes only when requested; without CAP_NET_RAW it reports a warning and falls back to TCP connect / `ping`. Intrusive external tools remain explicit options; their raw output is preserved separately, and Nuclei results remain marked as tool-reported until manually validated. See [`docs/PLAN_COVERAGE.md`](docs/PLAN_COVERAGE.md) for requirement traceability, [`Progress.md`](Progress.md) for current build/verification status, and [`Phases.md`](Phases.md) for the remaining deferred capabilities.
 
 ## Workspace
 
@@ -141,11 +141,14 @@ web:
   active_waf: false
   parameter_fuzzing: false
   sensitive_files: false
+  sensitive_wordlist: ""
+  max_sensitive_paths: 200
   user_agent: "reconx/1.0"
 vulnerability:
   active_checks: false
 reporting:
   show_secrets: false
+  systemd_unit: false
 ```
 
 Run with `--config reconx.yaml`. Unsupported YAML constructs and unknown settings fail closed rather than being ignored.

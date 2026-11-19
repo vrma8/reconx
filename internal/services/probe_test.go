@@ -3,6 +3,8 @@ package services
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -66,5 +68,60 @@ func TestEnrichGenericBanner(t *testing.T) {
 	service := Enrich(context.Background(), model.Service{Host: host, Port: port, Transport: "tcp", Name: "vnc"}, 500*time.Millisecond)
 	if service.Metadata["rfb_version"] == "" || strconv.Itoa(service.Port) == "" {
 		t.Fatalf("VNC metadata = %#v", service.Metadata)
+	}
+}
+
+func TestEnrichSSHAlgorithms(t *testing.T) {
+	nameList := func(value string) []byte {
+		out := make([]byte, 4)
+		binary.BigEndian.PutUint32(out, uint32(len(value)))
+		return append(out, []byte(value)...)
+	}
+	body := append([]byte{0, 20}, make([]byte, 16)...)
+	body = append(body, nameList("curve25519-sha256")...)
+	body = append(body, nameList("rsa-sha2-256,ssh-ed25519")...)
+	body = append(body, nameList("aes128-ctr")...)
+	packet := make([]byte, 4)
+	binary.BigEndian.PutUint32(packet, uint32(len(body)))
+	packet = append(packet, body...)
+	host, port := serveOnce(t, func(connection net.Conn) {
+		_, _ = connection.Write([]byte("SSH-2.0-OpenSSH_9.6\r\n"))
+		_, _ = connection.Write(packet)
+	})
+	service := Enrich(context.Background(), model.Service{Host: host, Port: port, Transport: "tcp", Name: "ssh"}, 500*time.Millisecond)
+	if !strings.Contains(service.Metadata["ssh_host_key_algorithms"], "rsa-sha2-256") || !strings.Contains(service.Metadata["ssh_kex_algorithms"], "curve25519") {
+		t.Fatalf("SSH algorithm metadata = %#v", service.Metadata)
+	}
+}
+
+func TestRDPNegotiationResponse(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	go func() {
+		buffer := make([]byte, 15)
+		_, _ = io.ReadFull(server, buffer)
+		_, _ = server.Write([]byte{0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x02, 0x00, 0x08, 0x00, 0x03, 0x00, 0x00, 0x00})
+	}()
+	got := rdpEncryption(client)
+	if !strings.Contains(got, "SSL") || !strings.Contains(got, "HYBRID") {
+		t.Fatalf("RDP encryption = %q", got)
+	}
+}
+
+func TestPostgresAuthWithoutCredentials(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	go func() {
+		buffer := make([]byte, 64)
+		count, _ := server.Read(buffer)
+		if count < 8 {
+			return
+		}
+		_, _ = server.Write([]byte{'R', 0, 0, 0, 8, 0, 0, 0, 3})
+	}()
+	if got := postgresAuth(client); got != "requires_auth" {
+		t.Fatalf("postgres auth = %q", got)
 	}
 }

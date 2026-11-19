@@ -54,6 +54,10 @@ web:
   js_analysis: false
   screenshots: false
   waf_detection: false
+  # Optional newline-delimited paths; empty uses the built-in high-signal list.
+  sensitive_wordlist: ""
+  # 1-2000; probes are HEAD-only and bounded by max_probes.
+  max_sensitive_paths: 200
   user_agent: "reconx/1.0 (+authorized-security-assessment)"
 vulnerability:
   nvd: false
@@ -65,3 +69,5 @@ external_tools:
   sherlock: ""
 reporting:
   show_secrets: false
+  # Write service/timer units for operator review; does not install them.
+  systemd_unit: false

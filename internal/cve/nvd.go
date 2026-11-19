@@ -7,6 +7,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/vrma8/reconx/internal/model"
@@ -82,9 +83,13 @@ type node struct {
 }
 
 type cpe struct {
-	Criteria   string `json:"criteria"`
-	URI        string `json:"cpe23Uri"`
-	Vulnerable bool   `json:"vulnerable"`
+	Criteria              string `json:"criteria"`
+	URI                   string `json:"cpe23Uri"`
+	Vulnerable            bool   `json:"vulnerable"`
+	VersionStartIncluding string `json:"versionStartIncluding"`
+	VersionStartExcluding string `json:"versionStartExcluding"`
+	VersionEndIncluding   string `json:"versionEndIncluding"`
+	VersionEndExcluding   string `json:"versionEndExcluding"`
 }
 
 // MatchFile supports NVD 2.0 and legacy NVD feeds. It only reports exact
@@ -160,21 +165,148 @@ func matchEntry(value entry, services []observedService) (model.Finding, bool) {
 			product, version = parseCPE(matchedCPE.URI)
 		}
 		for _, service := range services {
-			if product == service.Product && version == service.Version {
-				return model.Finding{
-					Severity:    severity(value),
-					Title:       value.ID + " matches detected " + service.Product + " " + service.Version,
-					Description: descriptionFor(value),
-					Asset:       service.Asset,
-					Evidence:    "CPE " + firstNonEmpty(matchedCPE.Criteria, matchedCPE.URI),
-					Remediation: "Validate the installed version and apply the vendor security update or mitigation.",
-					Confidence:  "version-match",
-					Source:      "phase7-cve",
-				}, true
+			if product != service.Product || !versionMatches(matchedCPE, version, service.Version) {
+				continue
 			}
+			confidence := "version-match"
+			evidence := "CPE " + firstNonEmpty(matchedCPE.Criteria, matchedCPE.URI)
+			if hasVersionRange(matchedCPE) {
+				confidence = "version-range"
+				evidence += "; observed " + service.Version + " " + describeRange(matchedCPE)
+			}
+			return model.Finding{
+				Severity:       severity(value),
+				Title:          value.ID + " affects " + service.Product,
+				Description:    descriptionFor(value),
+				Asset:          service.Asset,
+				Evidence:       evidence,
+				MITRE:          []string{"T1190"},
+				Remediation:    "Validate the installed version and apply the vendor security update or mitigation.",
+				Confidence:     confidence,
+				Source:         "phase7-cve",
+				Exploitability: "unknown",
+				BusinessImpact: impactFromSeverity(severity(value)),
+			}, true
 		}
 	}
 	return model.Finding{}, false
+}
+
+func hasVersionRange(value cpe) bool {
+	return value.VersionStartIncluding != "" || value.VersionStartExcluding != "" || value.VersionEndIncluding != "" || value.VersionEndExcluding != ""
+}
+
+func versionMatches(value cpe, cpeVersion, observed string) bool {
+	if observed == "" {
+		return false
+	}
+	// An explicit CPE version is exact. Version ranges are only applied when
+	// the CPE version is wildcarded or absent, matching NVD's own encoding.
+	if cpeVersion != "" && cpeVersion != "*" && cpeVersion != "-" {
+		return cpeVersion == observed
+	}
+	if !hasVersionRange(value) {
+		return cpeVersion == "*"
+	}
+	if value.VersionStartIncluding != "" && compareVersions(observed, value.VersionStartIncluding) < 0 {
+		return false
+	}
+	if value.VersionStartExcluding != "" && compareVersions(observed, value.VersionStartExcluding) <= 0 {
+		return false
+	}
+	if value.VersionEndIncluding != "" && compareVersions(observed, value.VersionEndIncluding) > 0 {
+		return false
+	}
+	if value.VersionEndExcluding != "" && compareVersions(observed, value.VersionEndExcluding) >= 0 {
+		return false
+	}
+	return true
+}
+
+func describeRange(value cpe) string {
+	parts := make([]string, 0, 4)
+	for _, entry := range []struct{ label, value string }{
+		{">=", value.VersionStartIncluding}, {">>", value.VersionStartExcluding},
+		{"<=", value.VersionEndIncluding}, {"<<", value.VersionEndExcluding},
+	} {
+		if entry.value != "" {
+			parts = append(parts, entry.label+" "+entry.value)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+var versionToken = regexp.MustCompile(`[0-9]+|[a-z]+`)
+
+// compareVersions is a conservative, dependency-free ordering for the version
+// forms found in CPE ranges (1.2.3, 8.0p1, 2.4.0-rc1). Unknown forms compare
+// lexicographically; a missing numeric segment is older, a missing textual
+// qualifier is newer. This is a correlation lead, never an exploit assertion.
+func compareVersions(left, right string) int {
+	a, b := versionToken.FindAllString(strings.ToLower(left), 32), versionToken.FindAllString(strings.ToLower(right), 32)
+	for index := 0; index < len(a) && index < len(b); index++ {
+		if a[index] == b[index] {
+			continue
+		}
+		an, aerr := strconv.Atoi(a[index])
+		bn, berr := strconv.Atoi(b[index])
+		switch {
+		case aerr == nil && berr == nil:
+			if an < bn {
+				return -1
+			}
+			return 1
+		case aerr == nil:
+			return 1
+		case berr == nil:
+			return -1
+		case a[index] < b[index]:
+			return -1
+		default:
+			return 1
+		}
+	}
+	if len(a) == len(b) {
+		return 0
+	}
+	if len(a) < len(b) {
+		next := b[len(a)]
+		if isPostQualifier(next) {
+			return -1
+		}
+		if _, err := strconv.Atoi(next); err == nil {
+			return -1
+		}
+		return 1
+	}
+	next := a[len(b)]
+	if isPostQualifier(next) {
+		return 1
+	}
+	if _, err := strconv.Atoi(next); err == nil {
+		return 1
+	}
+	return -1
+}
+
+func isPostQualifier(token string) bool {
+	switch token {
+	case "p", "pl", "patch", "post", "r":
+		return true
+	default:
+		return false
+	}
+}
+
+func impactFromSeverity(value model.Severity) string {
+	switch value {
+	case model.SeverityCritical, model.SeverityHigh:
+		return "high"
+	case model.SeverityMedium:
+		return "medium"
+	default:
+		return "low"
+	}
 }
 
 func allCPE(configurations []configuration) []cpe {

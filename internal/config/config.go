@@ -43,6 +43,8 @@ type Config struct {
 	ActiveWAF                bool
 	ParameterFuzzing         bool
 	SensitiveFiles           bool
+	SensitiveWordlist        string
+	MaxSensitivePaths        int
 	ActiveChecks             bool
 	CloudAssets              bool
 	TakeoverVerify           bool
@@ -82,6 +84,7 @@ type Config struct {
 	ShowSecrets              bool
 	HTMLTheme                string
 	PDFEnabled               bool
+	SystemdUnit              bool
 	Verbose                  bool
 	Quiet                    bool
 	ShodanKey                string
@@ -116,12 +119,13 @@ type Config struct {
 
 func Default() Config {
 	return Config{
-		Workspace: "", Phases: "0-10", Rate: 1000, Timeout: 5 * time.Second,
+		Workspace: "", Phases: "0-10", Rate: 1000, Timeout: 500 * time.Millisecond,
 		Workers: 100, Retries: 2, MaxProbes: 300000, OSINT: true, OSINTAXFR: true, SocialEnum: true,
 		SubdomainBrute: true, SubdomainPermutations: true, CloudAssets: true, TakeoverVerify: true,
 		SubdomainMaxWords: 5000, SubdomainMaxPermutations: 10000, CloudAssetMaxCandidates: 500, TakeoverMaxChecks: 0,
 		CrawlDepth: 3, MaxURLs: 1000, APIDiscovery: true, NLP: true, PythonDir: "python", UserAgent: "reconx/1.0 (+authorized-security-assessment)",
 		HostEnrichment: true, HeaderScore: true, SRIChecks: true, TLSAssessment: true,
+		MaxSensitivePaths: 200,
 	}
 }
 
@@ -160,6 +164,9 @@ func (c Config) Validate() error {
 	}
 	if c.MaxURLs < 1 {
 		return fmt.Errorf("max-urls must be at least 1")
+	}
+	if c.MaxSensitivePaths < 1 || c.MaxSensitivePaths > 2000 {
+		return fmt.Errorf("max-sensitive-paths must be between 1 and 2000")
 	}
 	return nil
 }
@@ -339,6 +346,10 @@ func apply(c *Config, key, value string) error {
 		return boolean(&c.ParameterFuzzing)
 	case "web.sensitive_files":
 		return boolean(&c.SensitiveFiles)
+	case "web.sensitive_wordlist":
+		c.SensitiveWordlist = value
+	case "web.max_sensitive_paths":
+		return integer(&c.MaxSensitivePaths)
 	case "web.testssl":
 		return boolean(&c.TestSSL)
 	case "web.user_agent":
@@ -357,6 +368,8 @@ func apply(c *Config, key, value string) error {
 		c.HTMLTheme = value
 	case "reporting.pdf":
 		return boolean(&c.PDFEnabled)
+	case "reporting.systemd_unit":
+		return boolean(&c.SystemdUnit)
 	case "external_tools.nmap":
 		c.NmapPath = value
 	case "external_tools.masscan":

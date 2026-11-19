@@ -13,57 +13,57 @@
 
 **Phase 3**
 
-* ARP sweep is explicitly unavailable.
-* No native TCP/IP stack OS fingerprinting.
+* ARP sweep is explicitly unavailable in the portable CGO-free build.
+* No native TCP/IP-stack OS fingerprinting; Nmap `-O` remains the OS evidence source when enabled.
 * Passive ASN/organization/country ownership from Phase 1 is merged into the host inventory; active geolocation lookups and BGP-driven host discovery are not performed.
-* ICMP uses the external `ping` command, not raw-socket probing.
+* ICMP echo discovery uses a privileged raw-socket sweep when CAP_NET_RAW is available and falls back to the installed `ping` command otherwise.
 
 **Phase 4**
 
-* `--syn` still falls back to TCP connect; AF_PACKET SYN scanning is not implemented.
+* `--syn` now uses a bounded raw-IP TCP SYN scanner when CAP_NET_RAW is available, with a clear warning and TCP-connect fallback when it is not. The scanner sends SYN packets only and never completes a handshake.
 * Nmap `-oX` service/OS/vulnerability XML is parsed into normalized service names, versions, metadata and OS fingerprints.
-* Opt-in native enrichment collects SSH software, SMTP EHLO, FTP features, Redis/Memcached/MySQL/PostgreSQL/MongoDB/VNC/RDP/HTTP metadata and a bounded 512-byte hex dump. SSH host-key algorithm enumeration remains partial.
-* The plan’s 500 ms default timeout differs from the current portable 5 s default.
+* Native enrichment collects SSH software plus KEX/host-key/cipher algorithms, SMTP EHLO, FTP features, Redis/Memcached/MySQL/PostgreSQL/MongoDB/VNC/RDP/HTTP metadata and a bounded 512-byte hex dump.
+* The plan's 500 ms default timeout is now the portable default; operators can override it with `--timeout`.
 
 **Phase 5**
 
-* RDP/NLA/encryption enumeration is absent; only bounded RDP TLS metadata is collected.
-* UDP SNMP enumeration is not linked from responsive UDP results into the service-enumeration pipeline.
-* No native unauthenticated-access checks for MySQL, PostgreSQL, MongoDB, Redis, Elasticsearch, Docker or VNC; only read-only metadata banners are gathered.
-* No DNSSEC/resolver-info service checks beyond Phase 1's bounded AXFR worker.
+* RDP negotiation metadata reports SSL/HYBRID/RDSTLS support; full NLA session negotiation remains an external-tool integration.
+* Responsive UDP/161 results are linked into the service inventory so the read-only `snmpwalk` integration can run in Phase 5.
+* Read-only unauthenticated-access indicators are recorded for Redis `INFO`, Memcached `stats`, PostgreSQL startup without credentials, and public Elasticsearch/Docker HTTP APIs. MySQL/MongoDB/VNC remain banner/version-only.
+* A single DNSSEC-aware DNSKEY query records the AD bit, DNSKEY/RRSIG counts and resolver notes for domain targets.
 * Bounded hex dumps and protocol guesses are available; robust identification of arbitrary unknown protocols is still best-effort.
 * Nmap XML is normalized into service details. Other external tool output remains raw unless a format-specific parser exists.
 
 **Phase 6**
 
-* Passive WAF signatures and optional wafw00f are complemented by opt-in bounded harmless payload probes; timing-based WAF analysis is intentionally not implemented.
-* Parameter reflection and error-pattern probes are implemented with fixed markers; timing-based injection detection is intentionally not implemented.
+* Passive WAF signatures and optional wafw00f are complemented by opt-in bounded payload probes with signature, status and timing-lead signals.
+* Parameter reflection, error-pattern and bounded timing-delta probes are implemented; timing results are leads, not confirmed injection.
 * Subresource Integrity checks and an explainable 0–100 header score are implemented.
 * A verified TLS handshake pass reports hostname validity, chain trust, protocol version, cipher strength and issuer/expiry notes.
-* A fixed high-signal sensitive-path `HEAD` list is implemented; exhaustive wordlist-based file discovery remains optional through content discovery.
+* Sensitive-path checks use a built-in high-signal list and an optional/auto-detected wordlist, capped by `--max-sensitive-paths`, with `HEAD` requests only.
 * Screenshots still require the optional Playwright runtime; captured screenshots are embedded into the HTML report with a bounded size/count.
 
 **Phase 7**
 
 * Bounded native traversal, reflected-XSS, SSRF, IDOR, auth-bypass and default-credential checks are implemented behind `--active-checks` with a hard request budget.
 * Nikto, WPScan and sqlmap output is normalized into tool-reported findings alongside Nuclei JSONL.
-* WPScan is not yet restricted to confirmed WordPress targets.
-* NVD matching is an exact local CPE/version matcher, not full NVD version-range matching.
+* WPScan runs only for targets with confirmed WordPress fingerprints.
+* NVD matching supports exact CPE versions and NVD `versionStart*`/`versionEnd*` ranges with a bounded, dependency-free version comparator; exotic vendor-specific version schemes remain best-effort.
 
 **Phase 8**
 
 * Azure storage/client secret, bearer token and API-key header patterns are implemented with redaction.
 * The dependency-free NLP worker extracts emails, phones, internal hosts, organizations, people, physical addresses, project names and codenames.
-* Exposed-file checks combine sensitive-path responses and HTTP content discovery; a dedicated exhaustive file module is not implemented.
+* Exposed-file inventory combines sensitive-path responses, content-discovery results and web responses into one deduplicated artifact with source attribution. Document metadata extraction from downloaded files remains outside the portable core.
 
 **Phase 9**
 
 * Exploitability and business-impact labels are added to findings and feed an explainable, capped score adjustment.
-* CVE correlation is still limited by the local exact-version matcher.
+* CVE correlation uses exact and ranged CPE matches, adds MITRE technique tags and business-impact metadata, and deduplicates by CVE/product/asset.
 
 **Phase 10**
 
 * Terminal output includes activity counters, detailed host/web/warning sections and severity-ranked findings.
 * HTML is dark, self-contained, filterable and collapsible.
 * Captured screenshots are embedded with bounded size/count and referenced in `report.json`.
-* Scheduled systemd integration is not implemented.
+* Optional systemd service/timer units are written for operator review; installing and enabling them remains an explicit host action.

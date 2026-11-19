@@ -1,8 +1,11 @@
 package orchestrator
 
 import (
+	"bufio"
 	"context"
+	"fmt"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 
@@ -18,6 +21,14 @@ const (
 	maxWebCheckParameters   = 3
 	maxWebCheckSRIResources = 100
 )
+
+type exposedPath struct {
+	URL         string `json:"url"`
+	Path        string `json:"path"`
+	StatusCode  int    `json:"status_code"`
+	Interesting bool   `json:"interesting"`
+	Source      string `json:"source"`
+}
 
 // runEnhancedWebChecks adds explainable header/SRI/TLS assessment and opt-in
 // bounded active probes. Every generated artifact is JSON so reports and diff
@@ -111,12 +122,21 @@ func (e *Engine) runEnhancedWebChecks(ctx context.Context, client *httpx.Client,
 
 	sensitiveResults := []webcheck.SensitivePathResult{}
 	if e.Config.SensitiveFiles {
-		seeds := targets
+		seeds := uniqueOrigins(targets)
 		if len(seeds) > 2 {
 			seeds = seeds[:2]
 		}
-		e.stats.HTTPRequests += len(seeds) * 22
-		sensitiveResults = webcheck.ProbeSensitivePaths(ctx, client.HTTPClient(), e.Config.UserAgent, seeds)
+		paths := e.sensitivePathList()
+		if len(paths) > 0 {
+			e.stats.HTTPRequests += len(seeds) * len(paths)
+			sensitiveResults = webcheck.ProbeSensitivePathList(ctx, client.HTTPClient(), e.Config.UserAgent, seeds, paths)
+		} else {
+			e.stats.HTTPRequests += len(seeds) * len(webcheck.FixedSensitivePaths())
+			sensitiveResults = webcheck.ProbeSensitivePaths(ctx, client.HTTPClient(), e.Config.UserAgent, seeds)
+		}
+		for _, result := range sensitiveResults {
+			e.sensitivePaths = append(e.sensitivePaths, exposedPath{URL: result.URL, Path: result.Path, StatusCode: result.StatusCode, Interesting: result.Interesting, Source: "phase6-sensitive-path"})
+		}
 	}
 
 	if err := e.Workspace.WriteJSON("06_web/header_scores.json", headerScores); err != nil {
@@ -202,8 +222,26 @@ func (e *Engine) runEnhancedWebChecks(ctx context.Context, client *httpx.Client,
 			Source:      "phase6-waf-probe",
 		})
 	}
+	for _, result := range wafResults {
+		if !result.TimingLead || result.Detected {
+			continue
+		}
+		e.State.AddFinding(model.Finding{
+			Severity:    model.SeverityInfo,
+			Title:       "WAF timing lead observed",
+			Description: "One bounded payload took materially longer than the baseline. This is a lead, not evidence of a WAF or a vulnerability.",
+			Evidence:    fmt.Sprintf("max delta %d ms", result.MaxTimingDeltaMS),
+			Asset:       assetFromURL(result.URL),
+			URL:         result.URL,
+			MITRE:       []string{"T1595"},
+			Remediation: "Correlate with server logs before drawing conclusions.",
+			Confidence:  "low",
+			Source:      "phase6-waf-timing",
+		})
+	}
+
 	for _, result := range parameterResults {
-		if !result.Reflected && result.ErrorPattern == "" {
+		if !result.Reflected && result.ErrorPattern == "" && result.TimeDeltaMS == 0 {
 			continue
 		}
 		e.State.AddFinding(model.Finding{
@@ -237,6 +275,84 @@ func (e *Engine) runEnhancedWebChecks(ctx context.Context, client *httpx.Client,
 		})
 	}
 	return nil
+}
+
+// sensitivePathList combines the fixed high-signal list with an optional
+// wordlist (auto-detected SecLists common.txt when present). Paths are capped
+// by config before any request is sent.
+func (e *Engine) sensitivePathList() []string {
+	wordlist := e.Config.SensitiveWordlist
+	if wordlist == "" {
+		if candidate := "/usr/share/wordlists/seclists/Discovery/Web-Content/common.txt"; fileExists(candidate) {
+			wordlist = candidate
+		}
+	}
+	paths := webcheck.FixedSensitivePaths()
+	if wordlist != "" {
+		file, err := os.Open(wordlist)
+		if err != nil {
+			e.State.AddWarning("sensitive wordlist: " + err.Error())
+		} else {
+			defer file.Close()
+			scanner := bufio.NewScanner(file)
+			for scanner.Scan() {
+				path := strings.TrimSpace(scanner.Text())
+				if path == "" || strings.HasPrefix(path, "#") || strings.ContainsAny(path, " \t") {
+					continue
+				}
+				if !strings.HasPrefix(path, "/") {
+					path = "/" + path
+				}
+				paths = append(paths, path)
+			}
+		}
+	}
+	limit := e.Config.MaxSensitivePaths
+	if limit < 1 {
+		limit = 200
+	}
+	return sortedUniquePaths(paths, limit)
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func sortedUniquePaths(paths []string, limit int) []string {
+	seen := map[string]struct{}{}
+	output := make([]string, 0, limit)
+	for _, path := range paths {
+		if _, found := seen[path]; found {
+			continue
+		}
+		seen[path] = struct{}{}
+		output = append(output, path)
+		if len(output) >= limit {
+			break
+		}
+	}
+	sort.Strings(output)
+	return output
+}
+
+func uniqueOrigins(targets []string) []string {
+	seen := map[string]struct{}{}
+	output := make([]string, 0, len(targets))
+	for _, target := range targets {
+		parsed, err := url.Parse(target)
+		if err != nil {
+			continue
+		}
+		origin := parsed.Scheme + "://" + parsed.Host
+		if _, found := seen[origin]; found {
+			continue
+		}
+		seen[origin] = struct{}{}
+		output = append(output, target)
+	}
+	sort.Strings(output)
+	return output
 }
 
 func representativeWebTargets(web []model.WebResult, parameters map[string][]string, maximum int) []string {
