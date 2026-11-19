@@ -29,12 +29,17 @@ func main() {
 }
 
 func run(arguments []string) error {
-	if hasArgument(arguments, "--version") || hasArgument(arguments, "-version") { fmt.Println("reconx", version); return nil }
+	if hasArgument(arguments, "--version") || hasArgument(arguments, "-version") {
+		fmt.Println("reconx", version)
+		return nil
+	}
 	settings := config.Default()
 	configPath := configArgument(arguments)
 	if configPath != "" {
 		loaded, err := config.LoadFile(configPath, settings)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		settings = loaded
 	}
 	flags := flag.NewFlagSet("reconx", flag.ContinueOnError)
@@ -67,6 +72,8 @@ func run(arguments []string) error {
 	flags.BoolVar(&settings.NmapOSScan, "nmap-os", false, "run nmap OS fingerprinting on discovered TCP hosts")
 	flags.BoolVar(&settings.NmapVulnScan, "nmap-vuln", false, "run nmap's vuln NSE category on discovered TCP hosts")
 	flags.BoolVar(&settings.ServiceEnum, "service-enum", false, "run read-only service-specific enumeration integrations")
+	flags.BoolVar(&settings.ServiceDetails, "service-details", settings.ServiceDetails, "perform bounded protocol-specific banner/detail probes on open ports")
+	flags.BoolVar(&settings.HostEnrichment, "host-enrichment", settings.HostEnrichment, "merge passive ASN/organization/country data into host inventory")
 	flags.BoolVar(&settings.CloudAssets, "cloud-assets", settings.CloudAssets, "check bounded public cloud bucket candidates")
 	flags.BoolVar(&settings.TakeoverVerify, "takeover-verify", settings.TakeoverVerify, "verify known CNAME takeover signatures with HTTP probes")
 	flags.BoolVar(&noCloudAssets, "no-cloud-assets", false, "skip public cloud bucket candidate checks")
@@ -90,6 +97,12 @@ func run(arguments []string) error {
 	flags.BoolVar(&settings.Screenshots, "screenshot", false, "capture screenshots with the optional Python Playwright helper")
 	flags.BoolVar(&settings.JSAnalysis, "js-analysis", false, "run the optional Python JavaScript endpoint analyzer")
 	flags.BoolVar(&settings.WAFDetection, "waf-detection", false, "run passive WAF signature checks and optional wafw00f")
+	flags.BoolVar(&settings.HeaderScore, "header-score", settings.HeaderScore, "score observed HTTP security headers from 0-100")
+	flags.BoolVar(&settings.SRIChecks, "sri-checks", settings.SRIChecks, "check external scripts/stylesheets for Subresource Integrity")
+	flags.BoolVar(&settings.TLSAssessment, "tls-assessment", settings.TLSAssessment, "validate TLS hostname, chain, protocol and cipher policy")
+	flags.BoolVar(&settings.ActiveWAF, "active-waf", false, "send bounded harmless payloads to look for WAF block signatures")
+	flags.BoolVar(&settings.ParameterFuzzing, "parameter-fuzzing", false, "probe discovered parameters for reflection and error patterns")
+	flags.BoolVar(&settings.SensitiveFiles, "sensitive-files", false, "probe a fixed set of high-signal sensitive paths")
 	flags.BoolVar(&settings.TestSSL, "testssl", false, "run installed testssl.sh against discovered HTTPS URLs")
 	flags.StringVar(&settings.ShodanKey, "shodan-key", settings.ShodanKey, "Shodan API key for optional external worker integrations")
 	flags.StringVar(&settings.CensysKey, "censys-key", settings.CensysKey, "Censys bearer API key for the optional passive OSINT worker")
@@ -106,6 +119,7 @@ func run(arguments []string) error {
 	flags.StringVar(&settings.IPInfoToken, "ipinfo-token", settings.IPInfoToken, "ipinfo token for ASN and ownership metadata")
 	flags.BoolVar(&settings.OSINTAXFR, "axfr", settings.OSINTAXFR, "attempt bounded DNS zone transfers against authoritative nameservers")
 	flags.BoolVar(&settings.SocialEnum, "social-enum", settings.SocialEnum, "run installed sherlock for discovered public email local-parts")
+	flags.BoolVar(&settings.ActiveChecks, "active-checks", false, "run bounded native web checks (traversal, XSS, SSRF, IDOR, auth bypass, default credentials)")
 	flags.BoolVar(&settings.Nuclei, "nuclei", false, "run installed nuclei templates (explicit opt-in)")
 	flags.BoolVar(&settings.Nikto, "nikto", false, "run installed Nikto (explicit opt-in)")
 	flags.BoolVar(&settings.SQLMap, "sqlmap", false, "run installed sqlmap on discovered query URLs (explicit opt-in)")
@@ -124,14 +138,25 @@ func run(arguments []string) error {
 	flags.StringVar(&settings.PythonDir, "python-dir", settings.PythonDir, "directory containing optional Python modules")
 	flags.BoolVar(&settings.Verbose, "verbose", false, "enable debug logs")
 	flags.BoolVar(&settings.Quiet, "quiet", false, "only log errors")
-	if err := flags.Parse(arguments); err != nil {
-		if errors.Is(err, flag.ErrHelp) { return nil }
+	// The documented CLI puts the target first, while flag.Parse stops at the
+	// first positional argument. Move options ahead of positional targets so
+	// both `reconx target --flag` and `reconx --flag target` work.
+	if err := flags.Parse(normalizeArguments(flags, arguments)); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	settings.Timeout = time.Duration(timeoutMS) * time.Millisecond
-	if noOSINT { settings.OSINT = false }
-	if noCloudAssets { settings.CloudAssets = false }
-	if noTakeoverVerify { settings.TakeoverVerify = false }
+	if noOSINT {
+		settings.OSINT = false
+	}
+	if noCloudAssets {
+		settings.CloudAssets = false
+	}
+	if noTakeoverVerify {
+		settings.TakeoverVerify = false
+	}
 	if settings.Deep {
 		settings.FullPorts = true
 		settings.ContentDiscovery = true
@@ -140,42 +165,138 @@ func run(arguments []string) error {
 		settings.Nuclei = true
 		settings.SQLMap = true
 		settings.WPScan = true
+		settings.ServiceDetails = true
+		settings.SensitiveFiles = true
+		settings.ParameterFuzzing = true
+		settings.ActiveWAF = true
 	}
-	if err := settings.Validate(); err != nil { return err }
+	if err := settings.Validate(); err != nil {
+		return err
+	}
 	targets, err := targets(flags.Args(), targetFile)
-	if err != nil { return err }
-	if !settings.Authorized { return errors.New("--i-am-authorized is required; only scan systems you are permitted to assess") }
-	if len(targets) > 1 && settings.Workspace != "" { return errors.New("--workspace can only be used with one target; use default per-target workspaces for a target file") }
-	level := slog.LevelInfo; if settings.Verbose { level = slog.LevelDebug }; if settings.Quiet { level = slog.LevelError }
+	if err != nil {
+		return err
+	}
+	if !settings.Authorized {
+		return errors.New("--i-am-authorized is required; only scan systems you are permitted to assess")
+	}
+	if len(targets) > 1 && settings.Workspace != "" {
+		return errors.New("--workspace can only be used with one target; use default per-target workspaces for a target file")
+	}
+	level := slog.LevelInfo
+	if settings.Verbose {
+		level = slog.LevelDebug
+	}
+	if settings.Quiet {
+		level = slog.LevelError
+	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	for _, target := range targets {
 		engine, err := orchestrator.New(target, settings, logger)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		reportValue, runErr := engine.Run(ctx)
-		report.Terminal(os.Stdout, reportValue, !settings.Quiet)
+		report.TerminalDetailed(os.Stdout, reportValue, !settings.Quiet, !settings.Quiet)
 		fmt.Printf("Workspace: %s\n", engine.Workspace.Root)
-		if runErr != nil { return runErr }
+		if runErr != nil {
+			return runErr
+		}
 	}
 	return nil
 }
 
 func targets(arguments []string, file string) ([]string, error) {
 	if file == "" {
-		if len(arguments) != 1 { return nil, errors.New("provide exactly one target or use -f targets.txt") }
+		if len(arguments) != 1 {
+			return nil, errors.New("provide exactly one target or use -f targets.txt")
+		}
 		return []string{arguments[0]}, nil
 	}
-	if len(arguments) != 0 { return nil, errors.New("do not combine a positional target with -f") }
-	handle, err := os.Open(file); if err != nil { return nil, err }; defer handle.Close()
+	if len(arguments) != 0 {
+		return nil, errors.New("do not combine a positional target with -f")
+	}
+	handle, err := os.Open(file)
+	if err != nil {
+		return nil, err
+	}
+	defer handle.Close()
 	result, seen := make([]string, 0), map[string]struct{}{}
 	scanner := bufio.NewScanner(handle)
-	for scanner.Scan() { target := strings.TrimSpace(strings.SplitN(scanner.Text(), "#", 2)[0]); if target != "" { if _, found := seen[target]; !found { seen[target]=struct{}{}; result=append(result,target) } } }
-	if err := scanner.Err(); err != nil { return nil, err }
-	if len(result) == 0 { return nil, errors.New("target file contains no targets") }
+	for scanner.Scan() {
+		target := strings.TrimSpace(strings.SplitN(scanner.Text(), "#", 2)[0])
+		if target != "" {
+			if _, found := seen[target]; !found {
+				seen[target] = struct{}{}
+				result = append(result, target)
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if len(result) == 0 {
+		return nil, errors.New("target file contains no targets")
+	}
 	return result, nil
 }
 
-func configArgument(arguments []string) string { for index, value := range arguments { if value == "--config" && index+1 < len(arguments) { return arguments[index+1] }; if strings.HasPrefix(value, "--config=") { return strings.TrimPrefix(value, "--config=") } }; return "" }
-func hasArgument(arguments []string, needle string) bool { for _, value := range arguments { if value == needle { return true } }; return false }
-func usage(flags *flag.FlagSet) { fmt.Fprint(flags.Output(), "Usage: reconx <IP|CIDR|domain|URL> --i-am-authorized [options]\n\nreconx is an authorization-gated reconnaissance tool. It uses bounded workers, a global probe rate, and a probe budget.\n\n"); flags.PrintDefaults() }
+// normalizeArguments keeps each option next to its value while moving
+// positional targets after all options. Bool flags that implement IsBoolFlag
+// do not consume the following token, which matches flag package semantics.
+func normalizeArguments(flags *flag.FlagSet, arguments []string) []string {
+	options := make([]string, 0, len(arguments))
+	positional := make([]string, 0, 1)
+	for index := 0; index < len(arguments); index++ {
+		argument := arguments[index]
+		if argument == "--" {
+			positional = append(positional, arguments[index+1:]...)
+			break
+		}
+		if !strings.HasPrefix(argument, "-") || argument == "-" {
+			positional = append(positional, argument)
+			continue
+		}
+		name := strings.TrimLeft(argument, "-")
+		if strings.Contains(name, "=") {
+			options = append(options, argument)
+			continue
+		}
+		option := flags.Lookup(name)
+		if option != nil {
+			if _, boolean := option.Value.(interface{ IsBoolFlag() bool }); !boolean && index+1 < len(arguments) {
+				index++
+				options = append(options, argument, arguments[index])
+				continue
+			}
+		}
+		options = append(options, argument)
+	}
+	return append(options, positional...)
+}
+
+func configArgument(arguments []string) string {
+	for index, value := range arguments {
+		if value == "--config" && index+1 < len(arguments) {
+			return arguments[index+1]
+		}
+		if strings.HasPrefix(value, "--config=") {
+			return strings.TrimPrefix(value, "--config=")
+		}
+	}
+	return ""
+}
+func hasArgument(arguments []string, needle string) bool {
+	for _, value := range arguments {
+		if value == needle {
+			return true
+		}
+	}
+	return false
+}
+func usage(flags *flag.FlagSet) {
+	fmt.Fprint(flags.Output(), "Usage: reconx <IP|CIDR|domain|URL> --i-am-authorized [options]\n\nreconx is an authorization-gated reconnaissance tool. It uses bounded workers, a global probe rate, and a probe budget.\n\n")
+	flags.PrintDefaults()
+}

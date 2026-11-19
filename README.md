@@ -23,9 +23,14 @@ The original plan calls for Cobra/Viper and SQLite. This build intentionally use
 make fmt
 make vet
 make test
+make test-race   # separate target: the race detector requires cgo
 make build
 # static binary: bin/reconx
 ```
+
+Options may appear before or after the target, so both documented forms work:
+`reconx example.com --i-am-authorized --fast` and
+`reconx --i-am-authorized --fast example.com`.
 
 The required toolchain is Go 1.22+ and Python 3.10+ only for the optional passive workers. The core scanner, resolver, HTTP probe, crawler, scorer, and reports use Go only. `./install.sh` builds and installs the binary; set `INSTALL_OPTIONAL_TOOLS=1` only on an approved Kali/Debian host to install optional external integrations through apt.
 
@@ -45,6 +50,8 @@ The required toolchain is Go 1.22+ and Python 3.10+ only for the optional passiv
 
 `--deep` enables all 65,535 TCP ports and Phase-2 permutations. Increase `max_subdomain_words` or `max_permutations` explicitly in the configuration when an authorized assessment needs a larger DNS scope; configured Phase-2 limits are never silently raised. The default probe ceiling is `300000`; scans that exceed it fail safely unless `--unsafe-large-scan` is given. Do not use that override to scan targets outside your explicit authorization.
 
+Extra capabilities are controlled by explicit flags: `--service-details` adds bounded read-only protocol metadata/hex dumps, `--nmap-service-scan`/`--nmap-os` normalize Nmap XML, `--header-score`, `--sri-checks` and `--tls-assessment` are passive assessments, while `--active-waf`, `--parameter-fuzzing`, `--sensitive-files` and `--active-checks` enable small fixed-payload probes with hard target/request caps. Every flag still requires the mandatory `--i-am-authorized` gate; use active flags only inside the approved scope.
+
 ## Pipeline
 
 | Phase | Implemented baseline |
@@ -53,15 +60,15 @@ The required toolchain is Go 1.22+ and Python 3.10+ only for the optional passiv
 | 1 | Concurrent bounded passive OSINT: full DNS record set, WHOIS, CT, Shodan/Censys/VT/urlscan, Shodan banner evidence, GitHub/GitLab code-search indicators, Pastebin/GitLab/Bitbucket public-index searches, structured public LinkedIn employee leads, HIBP for all discovered public emails, DNS history/reverse IP, ASN/BGP ownership, AXFR, and Sherlock integration. Each keyed source/tool self-skips when unavailable. |
 | 2 | Globally rate-limited async DNS at the configured default 1000 rps, automatic SecLists top-5000 plus optional custom-wordlist merge, complete name/IP inventory, numeric/environment permutations, target-derived S3/Azure/GCS/DO probes with HEAD-to-GET fallback, previous-workspace diffs, and provider-CNAME takeover signature verification. All discovered CNAMEs are checked by default, subject to the authorized run's global probe budget. |
 | 3 | CIDR liveness probe on 22/80/443/3389 and host inventory |
-| 4 | Rate-limited TCP connect scanning with retry/backoff, top-100 responsive UDP probing, banner/TLS service metadata |
-| 5 | Optional `nmap -sV --version-light` subprocess output capture |
-| 6 | HTTP/1.1 + HTTP/2 probing, TLS data, fingerprints, forms/API endpoints, same-scope crawl, content discovery, cookie/CORS/header checks |
-| 7 | Explicit opt-in external `nuclei`, `nikto`, `sqlmap`, and `wpscan`; Nuclei JSONL is normalized as tool-reported findings |
-| 8 | Local credential/connection-string pattern detection and exposed-file artifacts with default redaction; no validation or use of values |
-| 9 | Finding deduplication, stable IDs, severity/breadth risk score |
-| 10 | Terminal summary plus workspace JSON/CSV/self-contained HTML/PDF (when `wkhtmltopdf` is installed) |
+| 4 | Rate-limited TCP connect scanning with retry/backoff, top-100 responsive UDP probing, banner/TLS service metadata, opt-in bounded protocol enrichment and hex dumps |
+| 5 | Optional `nmap -sV --version-light` capture, normalized Nmap XML into service/OS data, and read-only protocol metadata |
+| 6 | HTTP/1.1 + HTTP/2 probing, verified TLS assessment, header score, SRI, fingerprints, forms/API endpoints, same-scope crawl, content discovery, bounded WAF/parameter/sensitive-path probes, cookie/CORS/header checks |
+| 7 | Explicit opt-in external `nuclei`, `nikto`, `sqlmap`, and `wpscan`, normalized tool output, and bounded native checks behind `--active-checks` |
+| 8 | Local credential/connection-string pattern detection, expanded NLP entity extraction and exposed-file artifacts with default redaction; no validation or use of values |
+| 9 | Finding deduplication, stable IDs, severity/breadth risk score with exploitability/business-impact adjustments |
+| 10 | Terminal summary with counters/detail plus workspace JSON/CSV/filterable HTML with embedded screenshots/PDF (when `wkhtmltopdf` is installed) |
 
-Reconx implements all ten pipeline phases. Phase 1 and Phase 2 run only after the mandatory authorization gate; source keys and missing local tools still self-skip without aborting the rest of the run. Use `--no-cloud-assets`, `--no-takeover-verify`, or the corresponding configuration values to suppress those Phase-2 HTTP checks when they are outside an approved scope. The portable core does not claim raw AF_PACKET privileges it does not have: `--syn` reports the TCP-connect fallback if a raw implementation is unavailable. Intrusive external tools remain explicit options; their raw output is preserved separately, and Nuclei results remain marked as tool-reported until manually validated. See [`docs/PLAN_COVERAGE.md`](docs/PLAN_COVERAGE.md) for requirement traceability and operational limits.
+Reconx implements all ten pipeline phases. Phase 1 and Phase 2 run only after the mandatory authorization gate; source keys and missing local tools still self-skip without aborting the rest of the run. Use `--no-cloud-assets`, `--no-takeover-verify`, or the corresponding configuration values to suppress those Phase-2 HTTP checks when they are outside an approved scope. The portable core does not claim raw AF_PACKET privileges it does not have: `--syn` reports the TCP-connect fallback if a raw implementation is unavailable. Intrusive external tools remain explicit options; their raw output is preserved separately, and Nuclei results remain marked as tool-reported until manually validated. See [`docs/PLAN_COVERAGE.md`](docs/PLAN_COVERAGE.md) for requirement traceability, [`Progress.md`](Progress.md) for current build/verification status, and [`Phases.md`](Phases.md) for the remaining deferred capabilities.
 
 ## Workspace
 
@@ -80,7 +87,7 @@ reconx_workspaces/<sanitized-target>_<utc-timestamp>/
     └── prioritized_findings.json
 ```
 
-Phase 2 additionally writes `02_subdomains/all_subdomains.txt`, `all_ips.txt`, `subdomain_ips.json`, `new_subdomains.txt`, `cloud_assets.json`, and `takeovers.json`. Use `--diff <workspace-or-report.json>` to produce `09_report/diff.json` listing new host names, open ports, and finding IDs.
+Phase 2 additionally writes `02_subdomains/all_subdomains.txt`, `all_ips.txt`, `subdomain_ips.json`, `new_subdomains.txt`, `cloud_assets.json`, and `takeovers.json`. The extended capability pass adds `04_ports/os_fingerprints.json`; `06_web/header_scores.json`, `sri_checks.json`, `tls_assessments.json`, `waf_probes.json`, `parameter_probes.json`, and `sensitive_paths.json`; and normalized tool findings in `07_vulns/tool_findings.json`. Use `--diff <workspace-or-report.json>` to produce `09_report/diff.json` listing new host names, open ports, and finding IDs.
 
 ## Configuration
 
@@ -122,11 +129,21 @@ attack_surface:
   # Applied separately to the SecLists and custom sources.
   max_subdomain_words: 5000
   max_permutations: 10000
+scanning:
+  service_details: false
 web:
   crawl_depth: 2
   max_urls: 500
   respect_robots: true
+  header_score: true
+  sri_checks: true
+  tls_assessment: true
+  active_waf: false
+  parameter_fuzzing: false
+  sensitive_files: false
   user_agent: "reconx/1.0"
+vulnerability:
+  active_checks: false
 reporting:
   show_secrets: false
 ```
@@ -137,7 +154,7 @@ Run with `--config reconx.yaml`. Unsupported YAML constructs and unknown setting
 
 - `python/osint` is a standard-library worker invoked with `python3 -m osint`. It uses source-specific keys only through its process environment, records source status/timing, and never writes keys or raw credential-like search snippets. Set `--python-dir` if the module is elsewhere.
 - DNS history/reverse-IP data requires a SecurityTrails or ViewDNS key. Censys accepts either `censys` or the documented `censys_id`/`censys_secret` pair. AXFR and Sherlock username checks are bounded Phase-1 operations enabled after the authorization gate; set `osint.axfr: false` or `osint.social_enum: false` when an approved scope excludes them.
-- `--nmap-service-scan`, `--nuclei`, `--nikto`, `--sqlmap`, `--wpscan`, and `--pdf` detect their local binaries and continue with a warning if unavailable.
+- `--nmap-service-scan`, `--nuclei`, `--nikto`, `--sqlmap`, `--wpscan`, and `--pdf` detect their local binaries and continue with a warning if unavailable. When present, Nmap XML is parsed into normalized service/OS data and Nikto/WPScan/sqlmap reports are normalized into tool-reported findings; raw output is retained.
 - Do not put API keys on a shell command line in multi-user environments. Prefer a `0600` config file or a purpose-built external worker.
 
 ## Safety and data handling

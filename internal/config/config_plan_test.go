@@ -66,8 +66,14 @@ external_tools:
   sherlock: "/usr/bin/sherlock"
 `
 	path := filepath.Join(t.TempDir(), "reconx.yaml")
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	value, err := LoadFile(path, Default())
-	if err != nil { t.Fatal(err) }
-	if value.NmapPath != "/usr/bin/nmap" || !value.PDFEnabled || value.UsernameWordlist == "" || value.PasswordWordlist == "" || value.CensysID != "censys-id" || value.HIBPKey != "hibp-key" || !value.SocialEnum || value.SherlockPath != "/usr/bin/sherlock" || !value.CloudAssets || !value.TakeoverVerify || value.SubdomainMaxWords != 6000 || value.SubdomainMaxPermutations != 20000 || value.CloudAssetMaxCandidates != 800 || value.TakeoverMaxChecks != 1200 { t.Fatalf("plan config not loaded: %#v", value) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.NmapPath != "/usr/bin/nmap" || !value.PDFEnabled || value.UsernameWordlist == "" || value.PasswordWordlist == "" || value.CensysID != "censys-id" || value.HIBPKey != "hibp-key" || !value.SocialEnum || value.SherlockPath != "/usr/bin/sherlock" || !value.CloudAssets || !value.TakeoverVerify || value.SubdomainMaxWords != 6000 || value.SubdomainMaxPermutations != 20000 || value.CloudAssetMaxCandidates != 800 || value.TakeoverMaxChecks != 1200 {
+		t.Fatalf("plan config not loaded: %#v", value)
+	}
 }

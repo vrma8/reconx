@@ -16,14 +16,32 @@ var FastTCPPorts = []int{21, 22, 23, 25, 53, 80, 110, 111, 135, 139, 143, 161, 3
 var TopUDPPorts = []int{7, 9, 17, 19, 49, 53, 67, 68, 69, 80, 88, 111, 120, 123, 135, 137, 138, 139, 161, 162, 177, 192, 199, 389, 407, 427, 443, 464, 500, 502, 512, 513, 514, 515, 517, 520, 623, 626, 631, 902, 921, 953, 1008, 1014, 1030, 1194, 1234, 1434, 1645, 1701, 1812, 1900, 2049, 2222, 3283, 3478, 3702, 3784, 4500, 5004, 5005, 5060, 5353, 5355, 5683, 6000, 6343, 6666, 6881, 6969, 7001, 7070, 7777, 8000, 8080, 8472, 8766, 10000, 10080, 11211, 12345, 13720, 16113, 17185, 18234, 20031, 21554, 27960, 30718, 31337, 32768, 32769, 32770, 32771, 32772, 32773, 32774, 32775, 32776, 32777}
 
 func Ports(full, fast bool) []int {
-	if full { output := make([]int, 65535); for i := range output { output[i] = i+1 }; return output }
-	if fast { return append([]int(nil), FastTCPPorts...) }
+	if full {
+		output := make([]int, 65535)
+		for i := range output {
+			output[i] = i + 1
+		}
+		return output
+	}
+	if fast {
+		return append([]int(nil), FastTCPPorts...)
+	}
 	seen := make(map[int]struct{}, len(TopTCPPorts))
 	output := make([]int, 0, 1000)
-	for _, port := range TopTCPPorts { if _, found := seen[port]; !found { seen[port] = struct{}{}; output = append(output, port) } }
+	for _, port := range TopTCPPorts {
+		if _, found := seen[port]; !found {
+			seen[port] = struct{}{}
+			output = append(output, port)
+		}
+	}
 	// Preserve a predictable top-1000 scan even when the curated high-signal
 	// list is shorter than one thousand entries.
-	for port := 1; len(output) < 1000 && port <= 65535; port++ { if _, found := seen[port]; !found { seen[port] = struct{}{}; output = append(output, port) } }
+	for port := 1; len(output) < 1000 && port <= 65535; port++ {
+		if _, found := seen[port]; !found {
+			seen[port] = struct{}{}
+			output = append(output, port)
+		}
+	}
 	sort.Ints(output)
 	return output
 }

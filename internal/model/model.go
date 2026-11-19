@@ -20,37 +20,42 @@ const (
 )
 
 type TargetProfile struct {
-	Input        string      `json:"input"`
-	Kind         TargetKind  `json:"kind"`
-	Hostname     string      `json:"hostname,omitempty"`
-	URL          string      `json:"url,omitempty"`
-	CIDR         string      `json:"cidr,omitempty"`
-	IPs          []string    `json:"ips"`
-	ReverseNames []string    `json:"reverse_names,omitempty"`
+	Input         string     `json:"input"`
+	Kind          TargetKind `json:"kind"`
+	Hostname      string     `json:"hostname,omitempty"`
+	URL           string     `json:"url,omitempty"`
+	CIDR          string     `json:"cidr,omitempty"`
+	IPs           []string   `json:"ips"`
+	ReverseNames  []string   `json:"reverse_names,omitempty"`
 	CloudProvider string     `json:"cloud_provider,omitempty"`
-	ResolvedAt   time.Time   `json:"resolved_at"`
+	ResolvedAt    time.Time  `json:"resolved_at"`
 }
 
 type Host struct {
-	IP          string   `json:"ip"`
-	Names       []string `json:"names,omitempty"`
-	ReverseDNS  string   `json:"reverse_dns,omitempty"`
-	OpenTCP     []int    `json:"open_tcp,omitempty"`
-	OpenUDP     []int    `json:"open_udp,omitempty"`
-	Services    []Service `json:"services,omitempty"`
-	Reachable   bool     `json:"reachable"`
+	IP         string    `json:"ip"`
+	Names      []string  `json:"names,omitempty"`
+	ReverseDNS string    `json:"reverse_dns,omitempty"`
+	OpenTCP    []int     `json:"open_tcp,omitempty"`
+	OpenUDP    []int     `json:"open_udp,omitempty"`
+	Services   []Service `json:"services,omitempty"`
+	Reachable  bool      `json:"reachable"`
+	ASN        string    `json:"asn,omitempty"`
+	Org        string    `json:"org,omitempty"`
+	Country    string    `json:"country,omitempty"`
 }
 
 type Service struct {
-	Host      string `json:"host"`
-	Port      int    `json:"port"`
-	Transport string `json:"transport"`
-	Name      string `json:"name"`
-	Banner    string `json:"banner,omitempty"`
-	TLS       bool   `json:"tls,omitempty"`
-	TLSVersion string `json:"tls_version,omitempty"`
-	TLSCipher string `json:"tls_cipher,omitempty"`
-	Version   string `json:"version,omitempty"`
+	Host       string            `json:"host"`
+	Port       int               `json:"port"`
+	Transport  string            `json:"transport"`
+	Name       string            `json:"name"`
+	Banner     string            `json:"banner,omitempty"`
+	TLS        bool              `json:"tls,omitempty"`
+	TLSVersion string            `json:"tls_version,omitempty"`
+	TLSCipher  string            `json:"tls_cipher,omitempty"`
+	Version    string            `json:"version,omitempty"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+	HexDump    string            `json:"hex_dump,omitempty"`
 }
 
 type DNSRecord struct {
@@ -99,13 +104,13 @@ type CookieInfo struct {
 }
 
 type TLSInfo struct {
-	Version      string   `json:"version,omitempty"`
-	Cipher       string   `json:"cipher,omitempty"`
-	Issuer       string   `json:"issuer,omitempty"`
-	Subject      string   `json:"subject,omitempty"`
-	DNSNames     []string `json:"dns_names,omitempty"`
-	NotAfter     string   `json:"not_after,omitempty"`
-	SelfSigned   bool     `json:"self_signed,omitempty"`
+	Version    string   `json:"version,omitempty"`
+	Cipher     string   `json:"cipher,omitempty"`
+	Issuer     string   `json:"issuer,omitempty"`
+	Subject    string   `json:"subject,omitempty"`
+	DNSNames   []string `json:"dns_names,omitempty"`
+	NotAfter   string   `json:"not_after,omitempty"`
+	SelfSigned bool     `json:"self_signed,omitempty"`
 }
 
 type Severity string
@@ -119,17 +124,19 @@ const (
 )
 
 type Finding struct {
-	ID          string   `json:"id"`
-	Severity    Severity `json:"severity"`
-	Title       string   `json:"title"`
-	Description string   `json:"description"`
-	Evidence    string   `json:"evidence,omitempty"`
-	Asset       string   `json:"asset,omitempty"`
-	URL         string   `json:"url,omitempty"`
-	MITRE       []string `json:"mitre,omitempty"`
-	Remediation string   `json:"remediation,omitempty"`
-	Confidence  string   `json:"confidence"`
-	Source      string   `json:"source"`
+	ID             string   `json:"id"`
+	Severity       Severity `json:"severity"`
+	Title          string   `json:"title"`
+	Description    string   `json:"description"`
+	Evidence       string   `json:"evidence,omitempty"`
+	Asset          string   `json:"asset,omitempty"`
+	URL            string   `json:"url,omitempty"`
+	MITRE          []string `json:"mitre,omitempty"`
+	Remediation    string   `json:"remediation,omitempty"`
+	Confidence     string   `json:"confidence"`
+	Source         string   `json:"source"`
+	Exploitability string   `json:"exploitability,omitempty"`
+	BusinessImpact string   `json:"business_impact,omitempty"`
 }
 
 type PhaseResult struct {
@@ -141,24 +148,58 @@ type PhaseResult struct {
 }
 
 type RiskSummary struct {
-	Score         int            `json:"score"`
-	Level         Severity       `json:"level"`
+	Score         int              `json:"score"`
+	Level         Severity         `json:"level"`
 	BySeverity    map[Severity]int `json:"by_severity"`
-	HostScores    map[string]int `json:"host_scores"`
-	TotalFindings int            `json:"total_findings"`
+	HostScores    map[string]int   `json:"host_scores"`
+	TotalFindings int              `json:"total_findings"`
+}
+
+type RunStats struct {
+	Probes          int `json:"probes"`
+	HTTPRequests    int `json:"http_requests"`
+	DNSQueries      int `json:"dns_queries"`
+	ToolInvocations int `json:"tool_invocations"`
+}
+
+type ScreenshotRef struct {
+	URL  string `json:"url"`
+	Path string `json:"path"`
+	Name string `json:"name"`
 }
 
 type Report struct {
-	SchemaVersion string        `json:"schema_version"`
-	GeneratedAt   time.Time     `json:"generated_at"`
-	Target        TargetProfile `json:"target"`
-	Hosts         []Host        `json:"hosts"`
-	DNS           []DNSRecord   `json:"dns,omitempty"`
-	Web           []WebResult   `json:"web,omitempty"`
-	Findings      []Finding     `json:"findings"`
-	Risk          RiskSummary   `json:"risk"`
-	Phases        []PhaseResult `json:"phases"`
-	Warnings      []string      `json:"warnings,omitempty"`
+	SchemaVersion string          `json:"schema_version"`
+	GeneratedAt   time.Time       `json:"generated_at"`
+	Target        TargetProfile   `json:"target"`
+	Hosts         []Host          `json:"hosts"`
+	DNS           []DNSRecord     `json:"dns,omitempty"`
+	Web           []WebResult     `json:"web,omitempty"`
+	Findings      []Finding       `json:"findings"`
+	Risk          RiskSummary     `json:"risk"`
+	Phases        []PhaseResult   `json:"phases"`
+	Warnings      []string        `json:"warnings,omitempty"`
+	Stats         RunStats        `json:"stats"`
+	Screenshots   []ScreenshotRef `json:"screenshots,omitempty"`
+}
+
+func (s *State) AddHostEnrichment(ip, asn, org, country string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	host, found := s.Hosts[ip]
+	if !found {
+		host = &Host{IP: ip}
+		s.Hosts[ip] = host
+	}
+	if asn != "" {
+		host.ASN = asn
+	}
+	if org != "" {
+		host.Org = org
+	}
+	if country != "" {
+		host.Country = country
+	}
 }
 
 // State is phase-owned shared state. Methods copy and normalize data so
@@ -213,7 +254,10 @@ func (s *State) SetReverseDNS(host, reverse string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	value, found := s.Hosts[host]
-	if !found { value = &Host{IP: host}; s.Hosts[host] = value }
+	if !found {
+		value = &Host{IP: host}
+		s.Hosts[host] = value
+	}
 	value.ReverseDNS = reverse
 }
 
@@ -221,7 +265,10 @@ func (s *State) MarkReachable(host string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	value, found := s.Hosts[host]
-	if !found { value = &Host{IP: host}; s.Hosts[host] = value }
+	if !found {
+		value = &Host{IP: host}
+		s.Hosts[host] = value
+	}
 	value.Reachable = true
 }
 
@@ -229,10 +276,18 @@ func (s *State) AddOpenPort(host string, port int, udp bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	value, found := s.Hosts[host]
-	if !found { value = &Host{IP: host}; s.Hosts[host] = value }
+	if !found {
+		value = &Host{IP: host}
+		s.Hosts[host] = value
+	}
 	ports := &value.OpenTCP
-	if udp { ports = &value.OpenUDP }
-	if !containsInt(*ports, port) { *ports = append(*ports, port); sort.Ints(*ports) }
+	if udp {
+		ports = &value.OpenUDP
+	}
+	if !containsInt(*ports, port) {
+		*ports = append(*ports, port)
+		sort.Ints(*ports)
+	}
 	value.Reachable = true
 }
 
@@ -240,17 +295,69 @@ func (s *State) AddService(service Service) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	value, found := s.Hosts[service.Host]
-	if !found { value = &Host{IP: service.Host}; s.Hosts[service.Host] = value }
-	for _, existing := range value.Services { if existing.Port == service.Port && existing.Transport == service.Transport { return } }
+	if !found {
+		value = &Host{IP: service.Host}
+		s.Hosts[service.Host] = value
+	}
+	for _, existing := range value.Services {
+		if existing.Port == service.Port && existing.Transport == service.Transport {
+			return
+		}
+	}
 	value.Services = append(value.Services, service)
 	sort.Slice(value.Services, func(i, j int) bool { return value.Services[i].Port < value.Services[j].Port })
+}
+
+// MergeService fills empty fields and adds metadata from a second source
+// (for example nmap XML) without discarding native probe evidence.
+func (s *State) MergeService(service Service) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	host, found := s.Hosts[service.Host]
+	if !found {
+		host = &Host{IP: service.Host}
+		s.Hosts[service.Host] = host
+	}
+	for index, existing := range host.Services {
+		if existing.Port != service.Port || existing.Transport != service.Transport {
+			continue
+		}
+		if existing.Banner == "" {
+			existing.Banner = service.Banner
+		}
+		if existing.Name == "" || existing.Name == "unknown" {
+			existing.Name = service.Name
+		}
+		if existing.Version == "" {
+			existing.Version = service.Version
+		}
+		if existing.Metadata == nil {
+			existing.Metadata = map[string]string{}
+		}
+		for key, value := range service.Metadata {
+			existing.Metadata[key] = value
+		}
+		host.Services[index] = existing
+		return
+	}
+	if service.Metadata != nil {
+		copied := make(map[string]string, len(service.Metadata))
+		for key, value := range service.Metadata {
+			copied[key] = value
+		}
+		service.Metadata = copied
+	}
+	host.Services = append(host.Services, service)
+	sort.Slice(host.Services, func(i, j int) bool { return host.Services[i].Port < host.Services[j].Port })
 }
 
 func (s *State) SubdomainList() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	output := make([]string, 0, len(s.Subdomains))
-	for value := range s.Subdomains { output = append(output, value) }
+	for value := range s.Subdomains {
+		output = append(output, value)
+	}
 	sort.Strings(output)
 	return output
 }
@@ -313,10 +420,14 @@ func (s *State) Snapshot() (TargetProfile, []Host, []DNSRecord, []WebResult, []F
 	}
 	sort.Slice(hosts, func(i, j int) bool { return hosts[i].IP < hosts[j].IP })
 	dns := make([]DNSRecord, 0, len(s.DNS))
-	for _, d := range s.DNS { dns = append(dns, d) }
+	for _, d := range s.DNS {
+		dns = append(dns, d)
+	}
 	sort.Slice(dns, func(i, j int) bool { return dns[i].Name < dns[j].Name })
 	web := make([]WebResult, 0, len(s.Web))
-	for _, w := range s.Web { web = append(web, w) }
+	for _, w := range s.Web {
+		web = append(web, w)
+	}
 	sort.Slice(web, func(i, j int) bool { return web[i].URL < web[j].URL })
 	findings := append([]Finding(nil), s.Findings...)
 	warnings := append([]string(nil), s.Warnings...)
@@ -325,10 +436,18 @@ func (s *State) Snapshot() (TargetProfile, []Host, []DNSRecord, []WebResult, []F
 }
 
 func contains(values []string, value string) bool {
-	for _, candidate := range values { if candidate == value { return true } }
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
 	return false
 }
 func containsInt(values []int, value int) bool {
-	for _, candidate := range values { if candidate == value { return true } }
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
 	return false
 }

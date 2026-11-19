@@ -12,16 +12,16 @@ import (
 )
 
 type nucleiRecord struct {
-	TemplateID       string `json:"template-id"`
-	Template         string `json:"template"`
-	MatchedAt        string `json:"matched-at"`
-	Host             string `json:"host"`
-	MatcherName      string `json:"matcher-name"`
+	TemplateID       string   `json:"template-id"`
+	Template         string   `json:"template"`
+	MatchedAt        string   `json:"matched-at"`
+	Host             string   `json:"host"`
+	MatcherName      string   `json:"matcher-name"`
 	ExtractedResults []string `json:"extracted-results"`
 	Info             struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Severity    string `json:"severity"`
+		Name        string   `json:"name"`
+		Description string   `json:"description"`
+		Severity    string   `json:"severity"`
 		Reference   []string `json:"reference"`
 	} `json:"info"`
 }
@@ -37,35 +37,56 @@ func ParseNucleiJSONL(reader io.Reader) ([]model.Finding, error) {
 	for scanner.Scan() {
 		line++
 		value := strings.TrimSpace(scanner.Text())
-		if value == "" { continue }
+		if value == "" {
+			continue
+		}
 		var record nucleiRecord
-		if err := json.Unmarshal([]byte(value), &record); err != nil { return nil, fmt.Errorf("nuclei JSONL line %d: %w", line, err) }
+		if err := json.Unmarshal([]byte(value), &record); err != nil {
+			return nil, fmt.Errorf("nuclei JSONL line %d: %w", line, err)
+		}
 		severity := nucleiSeverity(record.Info.Severity)
 		title := strings.TrimSpace(record.Info.Name)
-		if title == "" { title = strings.TrimSpace(record.TemplateID) }
-		if title == "" { title = strings.TrimSpace(record.Template) }
-		if title == "" { return nil, fmt.Errorf("nuclei JSONL line %d: missing template name", line) }
+		if title == "" {
+			title = strings.TrimSpace(record.TemplateID)
+		}
+		if title == "" {
+			title = strings.TrimSpace(record.Template)
+		}
+		if title == "" {
+			return nil, fmt.Errorf("nuclei JSONL line %d: missing template name", line)
+		}
 		asset := record.Host
-		if asset == "" { asset = record.MatchedAt }
+		if asset == "" {
+			asset = record.MatchedAt
+		}
 		evidence := strings.TrimSpace(record.MatcherName)
-		if len(record.ExtractedResults) > 0 { evidence = joinBounded(record.ExtractedResults, 3, 500) }
+		if len(record.ExtractedResults) > 0 {
+			evidence = joinBounded(record.ExtractedResults, 3, 500)
+		}
 		findings = append(findings, model.Finding{
 			Severity: severity, Title: title, Description: strings.TrimSpace(record.Info.Description),
 			Asset: asset, URL: record.MatchedAt, Evidence: evidence, Remediation: "Validate this external scanner result, then remediate according to the affected product guidance.",
 			Confidence: "tool-reported", Source: "phase7-nuclei",
 		})
 	}
-	if err := scanner.Err(); err != nil { return nil, err }
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
 	return findings, nil
 }
 
 func nucleiSeverity(value string) model.Severity {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "critical": return model.SeverityCritical
-	case "high": return model.SeverityHigh
-	case "medium": return model.SeverityMedium
-	case "low": return model.SeverityLow
-	default: return model.SeverityInfo
+	case "critical":
+		return model.SeverityCritical
+	case "high":
+		return model.SeverityHigh
+	case "medium":
+		return model.SeverityMedium
+	case "low":
+		return model.SeverityLow
+	default:
+		return model.SeverityInfo
 	}
 }
 
@@ -73,10 +94,16 @@ func joinBounded(values []string, maximum, limit int) string {
 	output := make([]string, 0, maximum)
 	for _, value := range values {
 		value = strings.TrimSpace(value)
-		if value != "" { output = append(output, value) }
-		if len(output) == maximum { break }
+		if value != "" {
+			output = append(output, value)
+		}
+		if len(output) == maximum {
+			break
+		}
 	}
 	joined := strings.Join(output, "; ")
-	if len(joined) > limit { return joined[:limit] }
+	if len(joined) > limit {
+		return joined[:limit]
+	}
 	return joined
 }

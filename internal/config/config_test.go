@@ -11,19 +11,29 @@ func TestLoadFile(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "reconx.yaml")
 	content := "scanning:\n  rate: 42\n  timeout_ms: 750\n  workers: 8\n  retries: 1\nweb:\n  crawl_depth: 2\n  respect_robots: true\napi_keys:\n  shodan: abc\n"
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	value, err := LoadFile(path, Default())
-	if err != nil { t.Fatal(err) }
-	if value.Rate != 42 || value.Timeout != 750*time.Millisecond || value.Workers != 8 || value.Retries != 1 || value.CrawlDepth != 2 || !value.RespectRobots || value.ShodanKey != "abc" { t.Fatalf("unexpected config: %#v", value) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Rate != 42 || value.Timeout != 750*time.Millisecond || value.Workers != 8 || value.Retries != 1 || value.CrawlDepth != 2 || !value.RespectRobots || value.ShodanKey != "abc" {
+		t.Fatalf("unexpected config: %#v", value)
+	}
 }
 
 func TestValidateRejectsPhase2Bounds(t *testing.T) {
 	value := Default()
 	value.SubdomainMaxPermutations = 0
-	if err := value.Validate(); err == nil { t.Fatal("expected phase 2 bound validation error") }
+	if err := value.Validate(); err == nil {
+		t.Fatal("expected phase 2 bound validation error")
+	}
 	value = Default()
 	value.TakeoverMaxChecks = -1
-	if err := value.Validate(); err == nil { t.Fatal("expected negative takeover cap validation error") }
+	if err := value.Validate(); err == nil {
+		t.Fatal("expected negative takeover cap validation error")
+	}
 }
 
 func TestDefaultRunsPlanPhaseOneAndTwoChecks(t *testing.T) {
@@ -35,6 +45,38 @@ func TestDefaultRunsPlanPhaseOneAndTwoChecks(t *testing.T) {
 
 func TestLoadFileRejectsUnknown(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bad.yaml")
-	if err := os.WriteFile(path, []byte("nope: true\n"), 0o600); err != nil { t.Fatal(err) }
-	if _, err := LoadFile(path, Default()); err == nil { t.Fatal("expected an unknown key error") }
+	if err := os.WriteFile(path, []byte("nope: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFile(path, Default()); err == nil {
+		t.Fatal("expected an unknown key error")
+	}
+}
+
+func TestLoadFileNewPhaseCapabilities(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "capabilities.yaml")
+	content := `scanning:
+  service_details: true
+osint:
+  host_enrichment: false
+web:
+  header_score: false
+  sri_checks: false
+  tls_assessment: false
+  active_waf: true
+  parameter_fuzzing: true
+  sensitive_files: true
+vulnerability:
+  active_checks: true
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	value, err := LoadFile(path, Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !value.ServiceDetails || value.HostEnrichment || value.HeaderScore || value.SRIChecks || value.TLSAssessment || !value.ActiveWAF || !value.ParameterFuzzing || !value.SensitiveFiles || !value.ActiveChecks {
+		t.Fatalf("capability config = %#v", value)
+	}
 }

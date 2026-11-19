@@ -7,10 +7,14 @@ import (
 
 func TestValidPrefix(t *testing.T) {
 	for _, value := range []string{"api", "api-v2", "admin01"} {
-		if !validPrefix(value) { t.Fatalf("%q should be valid", value) }
+		if !validPrefix(value) {
+			t.Fatalf("%q should be valid", value)
+		}
 	}
 	for _, value := range []string{"", "-api", "api-", "api.example", "api_1", "space value"} {
-		if validPrefix(value) { t.Fatalf("%q should be invalid", value) }
+		if validPrefix(value) {
+			t.Fatalf("%q should be invalid", value)
+		}
 	}
 }
 
